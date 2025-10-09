@@ -446,6 +446,84 @@ $4 = 0x80201000
 ### 文件结构分析
 接下来我们进行文件结构的分析，全面了解这些文件的构成与作用。
 
+首先绘制一下本项目的结构树,可以使用tree绘制：
+```bash
+│  Makefile
+│
+├─assets
+│      image.png
+│
+├─bin
+│      kernel
+│      ucore.img
+│
+├─kern
+│  ├─driver
+│  │      console.c
+│  │      console.h
+│  │
+│  ├─init
+│  │      entry.S
+│  │      init.c
+│  │
+│  ├─libs
+│  │      stdio.c
+│  │
+│  └─mm
+│          memlayout.h
+│          mmu.h
+│
+├─libs
+│      defs.h
+│      error.h
+│      printfmt.c
+│      readline.c
+│      riscv.h
+│      sbi.c
+│      sbi.h
+│      stdarg.h
+│      stdio.h
+│      string.c
+│      string.h
+│
+├─obj
+│  │  kernel.asm
+│  │  kernel.sym
+│  │
+│  ├─kern
+│  │  ├─driver
+│  │  │      console.d
+│  │  │      console.o
+│  │  │
+│  │  ├─init
+│  │  │      entry.d
+│  │  │      entry.o
+│  │  │      init.d
+│  │  │      init.o
+│  │  │
+│  │  └─libs
+│  │          stdio.d
+│  │          stdio.o
+│  │
+│  └─libs
+│          printfmt.d
+│          printfmt.o
+│          readline.d
+│          readline.o
+│          sbi.d
+│          sbi.o
+│          string.d
+│          string.o
+│
+└─tools
+        function.mk
+        kernel.ld
+```
+
+
+
+
+
 
 
 以下是我们认为本次实验中重要的几个知识点：
