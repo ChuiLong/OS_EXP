@@ -287,18 +287,161 @@ pc             0x80000000       0x80000000
 我们可以发现各个寄存器的值均符合最终的结果，通过pc值可以发现跳转到的地址位于0x80000000处。这就是我们进一步的流程分析代码，接下来我们就从这个地址开始分析。
 
 
+我们继续访问这之后的汇编语句。
+```asm           
+=> 0x80000000:  csrr    a6,mhartid
+   0x80000004:  bgtz    a6,0x80000108
+   0x80000008:  auipc   t0,0x0
+   0x8000000c:  addi    t0,t0,1032
+   0x80000010:  auipc   t1,0x0
+   0x80000014:  addi    t1,t1,-16
+   0x80000018:  sd      t1,0(t0)
+   0x8000001c:  auipc   t0,0x0
+   0x80000020:  addi    t0,t0,1020
+   0x80000024:  ld      t0,0(t0)
+   0x80000028:  auipc   t1,0x0
+   0x8000002c:  addi    t1,t1,1016
+   0x80000030:  ld      t1,0(t1)
+   0x80000034:  auipc   t2,0x0
+   0x80000038:  addi    t2,t2,988
+   0x8000003c:  ld      t2,0(t2)
+```
+接下来我们进行逐条分析，
+```asm
+0x80000000:  csrr  a6, mhartid
+0x80000004:  bgtz  a6, 0x80000108
+```
+读当前 **hartid** 到 `a6`。 `a6 > 0`（从核）就跳去 `0x80000108` 的路径（通常是二级核等待或稍后唤醒逻辑）；**主核 (hart 0)** 留在本路径做后续初始化和移交。
+
+```asm
+0x80000008:  auipc t0, 0x0
+0x8000000c:  addi  t0, t0, 1032        # 1032 = 0x408
+0x80000010:  auipc t1, 0x0
+0x80000014:  addi  t1, t1, -16
+0x80000018:  sd    t1, 0(t0)
+```
+
+`auipc t0,0 ; addi t0,t0,1032` 计算出一个**全局槽位地址**：有效地址 = `0x80000008 + 0x408 = 0x80000410` → 这是一块“数据槽位”。`auipc t1,0 ; addi t1,t1,-16` 计算出**本段运行时“文本基址”**  `0x80000010 - 16 = 0x80000000`（也就是**当前代码段起始地址**）。`sd t1, 0(t0)` 把 **0x80000000** 存进前面那块“全局槽位”。直白说：把“**text\_base = 0x80000000**”写入到内存地址 `0x80000410`。代码和常量表都按“**基址 + 偏移**”来算，先把**运行时基址**存起来，后续取常量时能做“偏移 + 基址”的还原。
+
+
+```asm
+0x8000001c:  auipc t0, 0x0
+0x80000020:  addi  t0, t0, 1020        # = 0x3FC
+0x80000024:  ld    t0, 0(t0)
+
+0x80000028:  auipc t1, 0x0
+0x8000002c:  addi  t1, t1, 1016        # = 0x3F8
+0x80000030:  ld    t1, 0(t1)
+
+0x80000034:  auipc t2, 0x0
+0x80000038:  addi  t2, t2, 988         # = 0x3DC
+0x8000003c:  ld    t2, 0(t2)
+```
+
+三组 **PC 相对 → 取常量**：
+计算出来的**常量表地址**分别是：
+
+  * `0x8000001c + 0x3FC = 0x80000418` → `ld t0, [0x80000418]`
+  * `0x80000028 + 0x3F8 = 0x80000420` → `ld t1, [0x80000420]`
+  * `0x80000034 + 0x3DC = 0x80000410` → `ld t2, [0x80000410]`
+
+注意最后一条正好从**前面写过的槽位**取值，因此 **`t2` 会被装成 0x80000000**（文本基址）。
+
+>
+> ```
+> add t0, t0, t2     # t0 += text_base
+> add t1, t1, t2     # t1 += text_base
+> ```
+>
+> 把它们“还原”为**绝对地址**（或运行时有效地址）。这通常用于：
+>
+> * `t0` ← 下一阶段入口地址（比如 payload/内核入口的相对地址）
+> * `t1` ← 下一阶段参数（例如 DTB 指针或参数块偏移）
+> * `t2` ← 运行时基址（刚才存进去又读出来）
+
+我查看了这之后的64条指令，发现内容很长，我们不太可能一句一句读到最终的跳转，因此我们换一个方法对于这个过程进行分析。
+
+如果我们使用指导书中给出的
+```bash
+(gdb) watch *0x80200000
+```
+事实上很难观察，这是因为0x80200000 的内容在 CPU 开始执行之前就已经被 QEMU 的“loader 设备”写好了。
+而 GDB 的 watch *0x80200000 只能在 CPU 执行一条写指令（比如 sd/sw）触发。于是你下了 watch 后 c 一跑，没有任何 CPU 写发生，程序就继续往下走直至退出/跳到内核.
+
+因此我们再watch后继续使用
+```bash
+b *0x80200000
+```
+可以得到输出
+```bash
+(gdb) watch *0x80200000
+Hardware watchpoint 1: *0x80200000
+(gdb) b *0x80200000 
+Note: breakpoint 1 also set at pc 0x80200000.
+Breakpoint 2 at 0x80200000: file kern/init/entry.S, line 7.
+(gdb) c
+Continuing.
+
+Breakpoint 2, kern_entry ()
+    at kern/init/entry.S:7
+7           la sp, bootstacktop
+```
+随后，我们观察指令空间与变量空间，发现
+```bash
+(gdb) x/8i $pc
+=> 0x80200000 <kern_entry>:     auipc   sp,0x3
+   0x80200004 <kern_entry+4>:   mv      sp,sp
+   0x80200008 <kern_entry+8>:
+    j   0x8020000a <kern_init>
+   0x8020000a <kern_init>:      auipc   a0,0x3
+   0x8020000e <kern_init+4>:    addi    a0,a0,-2
+   0x80200012 <kern_init+8>:    auipc   a2,0x3
+   0x80200016 <kern_init+12>:   addi    a2,a2,-10
+   0x8020001a <kern_init+16>:   addi    sp,sp,-16
+(gdb) info registers pc sp ra a0 a1
+pc             0x80200000       0x80200000 <kern_entry>
+sp             0x8001bd80       0x8001bd80
+ra             0x80000a02       0x80000a02
+a0             0x0      0
+a1             0x82200000       2183135232
+(gdb) info registers pc sp ra a0 a1
+pc             0x80200000       0x80200000 <kern_entry>
+sp             0x8001bd80       0x8001bd80
+ra             0x80000a02       0x80000a02
+a0             0x0      0
+a1             0x82200000       2183135232
+(gdb) info address bootstacktop
+Symbol "bootstacktop" is at 0x80203000 in a file compiled without debugging.
+(gdb) p/x &bootstacktop
+$1 = 0x80203000
+(gdb) p/x &bootstack
+$2 = 0x80201000
+```
+我们可以发现现在的pc、反汇编指令均匹配我们的entry入口。但栈尚未完成转移。我们多做一步，保证控制权完全移交。
+```bash
+(gdb) info address bootstacktop
+Symbol "bootstacktop" is at 0x80203000 in a file compiled without debugging.
+(gdb) p/x &bootstacktop        
+$3 = 0x80203000
+(gdb) p/x &bootstack           
+$4 = 0x80201000
+```
+可以发现移交栈空间成功，且大小符合debug的启动栈大小8 KiB。
 
 
 
-
-
-
-
-
-
-
-
-
+```bash
+(gdb) x/16gx 0x80200000
+0x80200000 <kern_entry>:        0x00010113000031170x051300003517a009
+0x80200010 <kern_init+6>:       0x061300003617ffe50x8e0945811141ff66
+0x80200020 <kern_init+22>:      0x0597494000efe4060x05174a2585930000
+0x80200030 <kern_init+38>:      0x00ef4ba5051300000xe0221141a0010200
+0x80200040 <cputch+4>:  0x048000ef842ee406      0xc01c278560a2401c
+0x80200050 <cputch+20>: 0x711d808201416402      0xf42e8e2a02810313
+0x80200060 <cprintf+10>:        0x00000517fc36f8320x869a004cfd850513
+0x80200070 <cprintf+26>:        0xe4bee0baec0686720xc202e41aecc6e8c2
+```
+仔细检查就能发现内核入口处的机器码与其函数与偏移均符合真实的反汇编代码，证实了 SBI 固件进行主初始化，其核心任务之一是将内核加载到 0x80200000，并且最后跳转到 0x80200000，将控制权移交内核。
 ## 任务二
 
 以下是我们认为本次实验中重要的几个知识点：
