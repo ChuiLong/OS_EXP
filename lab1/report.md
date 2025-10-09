@@ -519,10 +519,103 @@ $4 = 0x80201000
         function.mk
         kernel.ld
 ```
+文件很多，
+
+- 顶层与构建产物
+  - `Makefile`：项目的构建入口；编译/链接生成 `bin/kernel`，再用 `objcopy` 生成裸镜像 `bin/ucore.img`；提供 `qemu`、`debug`、`gdb` 等目标。
+  - `bin/kernel`：已链接的 RISC‑V ELF 内核，可供 `gdb` 读取符号进行源码级调试。
+  - `bin/ucore.img`：去除 ELF 头的纯二进制镜像，QEMU 通过 `-device loader,addr=0x80200000` 直接加载到物理内存。
+  - `obj/`：中间产物与调试文件
+    - `*.o/*.d`：各源文件对应的目标文件与依赖文件。
+    - `kernel.asm`：`objdump -S` 生成的反汇编（源码/汇编交叉）。
+    - `kernel.sym`：符号表，便于定位 `kern_entry`、`kern_init` 等符号。
+
+- 链接与 Make 规则
+  - `tools/kernel.ld`：链接脚本，定义段布局与入口地址，使镜像与运行地址契合（与 `memlayout.h` 常量保持一致）。
+  - `tools/function.mk`：通用的 Make 变量/规则片段，被主 `Makefile` 引用。
+
+- 内核入口与初始化（kern/init）
+  - `kern/init/entry.S`：汇编入口 `kern_entry`；`la sp, bootstacktop` 建立内核栈；`tail kern_init` 无返回跳转到 C 入口；`.data` 中预留 `bootstack/bootstacktop`。
+  - `kern/init/init.c`：C 入口 `kern_init`；清 BSS，初始化控制台，打印启动信息，后续逐步引导其他子系统（本实验聚焦早期输出）。
+
+- 控制台与输出（kern/driver、kern/libs、libs）
+  - `kern/driver/console.h`：控制台抽象接口声明。
+  - `kern/driver/console.c`：控制台实现，提供 `cons_init/cons_putc/cons_getc`；底层通过 SBI 与固件交互输出字符。
+  - `kern/libs/stdio.c`：内核态 `cprintf/vcprintf` 封装；调用 `libs/printfmt.c` 做格式化，经 `cputch -> cons_putc` 输出到控制台。
+  - `libs/stdio.h`：`cprintf` 等原型声明。
+  - `libs/printfmt.c`：`vprintfmt` 核心格式化引擎，支持 `%d/%x/%s` 等。
+  - `libs/readline.c`：简单的行输入工具；从控制台读取一行（后续实验会用到）。
+
+- SBI 与架构相关支持（libs）
+  - `libs/sbi.h`：SBI 调用号与接口原型。
+  - `libs/sbi.c`：`sbi_call` 的封装与具体服务（如 `sbi_console_putchar`）。
+  - `libs/riscv.h`：RISC‑V CSR 读写与指令辅助宏，部分特权级常量。
+
+- 内存布局与页相关（kern/mm）
+  - `kern/mm/memlayout.h`：内核静态内存布局常量（如 `KSTACKSIZE`、页大小相关常量）。
+  - `kern/mm/mmu.h`：页/页表项位定义等（本实验主要用到 `PGSHIFT`）。
+
+- 通用库与基础设施（libs）
+  - `libs/defs.h`：通用类型/属性/工具宏等基础定义。
+  - `libs/error.h`：错误码集合。
+  - `libs/string.h` / `libs/string.c`：`memset/memcpy/strcmp` 等基础字符串与内存操作。
+  - `libs/stdarg.h`：可变参数宏（`va_list/va_start/va_arg/va_end`），供 `printf` 家族使用。
 
 
+下面我们重点对 `kern_init` 执行路径进行文件结构上的分析，
 
+1) 入口与建栈
+- `kern/init/entry.S`
+  - `la sp, bootstacktop`：把内核引导栈顶地址装入 `sp`。
+  - `tail kern_init`：无返回跳转到 C 入口（不保留返回地址/调用帧）。
+- `.data` 中的 `bootstack/.space KSTACKSIZE/bootstacktop` 由 `memlayout.h` 的常量控制尺寸与对齐。
 
+2) C 入口与 BSS 清零
+- `kern/init/init.c`
+  - 原型：`int kern_init(void) __attribute__((noreturn));`
+    - `noreturn` 告诉编译器：该函数不返回（配合汇编 `tail` 与末尾 `while(1)`）。
+  - 关键代码：
+    - `extern char edata[], end[];`
+    - `memset(edata, 0, end - edata);`
+  - 链接符号来源：`tools/kernel.ld`
+    - `PROVIDE(edata = .);` 放在 `.data/.sdata` 结束之后；
+    - `PROVIDE(end = .);` 放在 `.bss` 结束之后；
+    - 因此 `edata..end` 正好覆盖 `.bss/.sbss` 区间，完成“BSS=0”的语义（把所有未初始化的全局/静态对象置零）。
+  - 注意点：BSS 清零要尽早进行，以免后续使用到的未初始化全局变量出现脏值。
+
+3) 启动信息打印
+- `const char *message = "(THU.CST) os is loading ...\n";`
+- `cprintf("%s\n\n", message);`：多打一行空行，便于视觉分隔。
+- 调用链完整展开：
+  - `cprintf(fmt, ...)`（`kern/libs/stdio.c`）
+    - 组装 `va_list` → 调 `vcprintf(fmt, ap)`。
+  - `vcprintf(fmt, ap)` → `vprintfmt(cputch, &cnt, fmt, ap)`（`libs/printfmt.c`）
+    - `vprintfmt` 为通用格式化引擎，按 `%d/%x/%s/%p/%e` 等逐字符调用传入的 `putch`。
+    - 其中 `%e` 会把错误号映射为字符串（见 `error_string[]`），本次未用到。
+  - `cputch(int c, int *cnt)`（`kern/libs/stdio.c`）
+    - `cons_putc(c)` 输出一个字符；`(*cnt)++` 统计打印字节数。
+  - `cons_putc(int c)`（`kern/driver/console.c`）
+    - 直接调用 `sbi_console_putchar((unsigned char)c)`，通过 SBI 把字符发给固件（OpenSBI）。
+  - `sbi_console_putchar` → `sbi_call(SBI_CONSOLE_PUTCHAR, ch, 0, 0)`（`libs/sbi.c`）
+    - `sbi_call` 内联汇编：
+      - 把调用号放到 `x17(a7)`，参数放到 `x10(a0)/x11(a1)/x12(a2)`；
+      - 执行 `ecall` 陷入 M 模式，由 OpenSBI 完成实际 UART/控制台输出；
+      - 返回值通过 `a0` 带回（此处通常不关心）。
+我们可以发现`kern_init` 的打印无需设备初始化（`cons_init` 在 lab1 为空实现），因为路径直接走 SBI 控制台服务。
+
+4) 相关库与可变参数
+- `libs/stdarg.h`：`va_list/va_start/va_arg/va_end` 的实现，`cprintf`/`vcprintf` 依赖。
+- `libs/string.c`：`memset` 的缺省实现逐字节填充；此处用于 BSS 清零。
+- `libs/printfmt.c`：
+  - `vprintfmt` 解析宽度、精度、补齐字符（空格/0）、长整型标志等，必要时调用 `printnum` 做进制转换与填充。
+  - `snprintf/vsnprintf` 也复用 `vprintfmt`，但输出目的为缓冲区（通过 `sprintputch`）。
+
+5) 典型调用图（简化）
+
+`kern_entry (entry.S)` → `kern_init (init.c)` → `memset(edata..end)` → `cprintf` → `vcprintf` → `vprintfmt` → `cputch` → `cons_putc` → `sbi_console_putchar` → `sbi_call` → `ecall`(OpenSBI)
+
+6) 返回语义
+- `kern_init` 在打印后进入 `while (1);`，保证不返回；与 `entry.S` 的 `tail` 语义一致，形成一次性单向移交。
 
 
 
