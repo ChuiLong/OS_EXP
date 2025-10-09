@@ -617,7 +617,7 @@ $4 = 0x80201000
 6) 返回语义
 - `kern_init` 在打印后进入 `while (1);`，保证不返回；与 `entry.S` 的 `tail` 语义一致，形成一次性单向移交。
 
-### 基于GDB的代码流程分析
+## 基于GDB的代码流程分析
 在前面我们已经对GDB的原理进行分析，并使用GDB跟踪代码运行到了0x80200000位置，本模块我们继续分析：
 #### 跳转至kern_init
 ```
@@ -724,7 +724,7 @@ $10 = 0x80203008
    0x80200032 <kern_init+40>:   addi    a0,a0,1210
    0x80200036 <kern_init+44>:   jal     ra,0x80200056 <cprintf>
 ```
-置零完成后，程序从指定位置读取字符串常量（在链接阶段已经被写入内存）放入指定寄存器并调用cprintf输出"(THU.CST) os is loading ...\n"。
+置零完成后，程序从指定位置读取字符串常量（在链接阶段已经被写入内存）放入指定寄存器并调用`cprintf`输出"(THU.CST) os is loading ...\n"。
 ```
 0x0000000080200036      11          cprintf("%s\n\n", message);
 (gdb) x/s $a0 
@@ -737,10 +737,58 @@ $10 = 0x80203008
 ```
   0x8020003a <kern_init+48>:   j       0x8020003a <kern_init+48>
 ```
+#### cprintf函数
+在之前的分析中，我们提到使用cprintf函数完成输出操作，这里我们对其进行进一步的分析。这个函数是由一个sbi接口层层封装而来，它具有和c语言中printf一样强大的功能。
+```
+int cprintf(const char *fmt, ...) {
+    va_list ap;
+    int cnt;
+    va_start(ap, fmt);
+    cnt = vcprintf(fmt, ap);
+    va_end(ap);
+    return cnt;
+}
+```
+我们看到`cprintf`可以接受可变数量的参数来适应不同格式的输出，它通过调用`vcprintf`函数，将参数交给`vprintfmt`进行解析并指定使用`cputch`函数进行打印，由于参数解析过程较为复杂且与OS关系不大，我们重点关注输出过程而对参数解析从略。
 
+通过分析调用关系我们知道`vprintfmt`负责对参数进行解析，然后调用`cputch`打印被成功解析的单个字符，于是设置断点进行跟踪：
+```
+(gdb) b* cputch
+Breakpoint 4 at 0x8020003c: file kern/libs/stdio.c, line 12.
+(gdb) c
+Continuing.
 
-以下是我们认为本次实验中重要的几个知识点：
-以下是我们认为本次实验中重要的几个知识点及其与OS原理之间的关系：
+Breakpoint 4, cputch (c=108, cnt=0x80202f94) at kern/libs/stdio.c:12
+12          cons_putc(c);
+(gdb) x/16i $pc
+=> 0x8020003c <cputch>: addi    sp,sp,-16
+   0x8020003e <cputch+2>:       sd      s0,0(sp)
+   0x80200040 <cputch+4>:       sd      ra,8(sp)
+   0x80200042 <cputch+6>:       mv      s0,a1
+   0x80200044 <cputch+8>:       jal     ra,0x8020008c <cons_putc>
+```
+可以看到这里的`cputch`是对`cons_putc`的一层封装，并且一进函数就进行一个标准的函数跳转（参数压栈+jal）。我们继续设置断点跟踪`cons_putc`：
+```
+=> 0x8020008c <cons_putc>:      zext.b  a0,a0
+   0x80200090 <cons_putc+4>:    j       0x80200480 <sbi_console_putchar>
+```
+这又是一层封装，`zext.b  a0,a0`将 a0 的低 8 位零扩展到整个寄存器，对应c代码中的将`int`强制转换为`unsigned char`。由于其它参数且操作直接在a0寄存中完成，这里代码可以直接跳转至`sbi_console_putchar`而无需额外操作。继续设置断点跟踪`sbi_console_putchar`：
+```
+   0x80200482 <sbi_console_putchar+2>:  auipc   a4,0x3
+   0x80200486 <sbi_console_putchar+6>:  ld      a4,-1154(a4)
+   0x8020048a <sbi_console_putchar+10>: mv      a7,a4
+   0x8020048c <sbi_console_putchar+12>: mv      a0,a0
+   0x8020048e <sbi_console_putchar+14>: mv      a1,a5
+   0x80200490 <sbi_console_putchar+16>: mv      a2,a5
+   0x80200492 <sbi_console_putchar+18>: ecall
+   0x80200496 <sbi_console_putchar+22>: mv      a5,a0
+   0x80200498 <sbi_console_putchar+24>: ret
+```
+我们终于跟踪到了最终负责输出的函数，在c代码中`sbi_console_putchar`其实是负责调用`sbi_call`函数,这里可能由于较为简单`sbi_call`被编译器内联嵌入。这段代码将我们要输出的单个字符和一个SBI号分别放入对应的指定寄存器，然后执行 ecall，触发异常，从而陷入到 M 模式，调用 OpenSBI 的打印服务。OpenSBI 会将返回值放入 a0，`mv a5,a0`将它放到a5保存。
+
+对cprintf的分析展示了OS设计中层层封装的原理，这些封装不仅保证了代码的可维护性，还大大提高了代码的复用率。
+
+- 同时，整个代码流程涉及了‘程序控制权’、‘权限等级’、‘SBI’等OS原理中重要的知识点，下面将对这些知识点展开详细的说明。
 
 ### 1. 程序控制权的交接
 
