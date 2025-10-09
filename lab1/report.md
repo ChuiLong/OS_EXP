@@ -889,7 +889,7 @@ Breakpoint 4, cputch (c=108, cnt=0x80202f94) at kern/libs/stdio.c:12
 
 下面是整个流程的详细分解和对应的流程图。
 
-![程序流程图](assets/01.svg)
+![程序流程图](assets/02.svg)
 
 
 #### 阶段一：M-Mode 引导存根 (地址 `0x1000`)
