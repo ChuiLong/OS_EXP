@@ -617,6 +617,126 @@ $4 = 0x80201000
 6) 返回语义
 - `kern_init` 在打印后进入 `while (1);`，保证不返回；与 `entry.S` 的 `tail` 语义一致，形成一次性单向移交。
 
+### 基于GDB的代码流程分析
+在前面我们已经对GDB的原理进行分析，并使用GDB跟踪代码运行到了0x80200000位置，本模块我们继续分析：
+#### 跳转至kern_init
+```
+(gdb) x/8i $pc
+=> 0x80200000 <kern_entry>:     auipc   sp,0x3
+   0x80200004 <kern_entry+4>:   mv      sp,sp
+   0x80200008 <kern_entry+8>:   j       0x8020000a <kern_init>
+```
+1. 0x80200000: auipc sp,0x3
+这是 la sp, bootstacktop 展开的高位部分：把当前 PC（0x80200000）加上 0x3<<12 = 0x3000，结果写入 sp。计算结果为 0x80203000（即 bootstacktop 的地址）,经过该语句我们的栈已经被成功初始化。
+2. 0x80200004: mv sp,sp
+这里是无操作，最终 sp 已等于 bootstacktop。
+3. 0x80200008: j 0x8020000a
+这是 tail kern_init 的效果：无返回地跳到 kern_init（地址 0x8020000a）。
+
+#### 栈结构
+我们使用gdb单步执行至kern_init函数
+```
+(gdb) si
+0x0000000080200004 in kern_entry () at kern/init/entry.S:7
+7           la sp, bootstacktop
+(gdb) si
+9           tail kern_init
+(gdb) si
+kern_init () at kern/init/init.c:8
+8           memset(edata, 0, end - edata);
+(gdb) x/1i $pc
+=> 0x8020000a <kern_init>:      auipc   a0,0x3
+```
+到这里栈已经初始化完毕，我们尝试探索栈的结构。首先，我们打印 sp 寄存器的值，并与符号 bootstacktop 的地址进行比较。值得注意的是，在获取bootstacktop时要在其前面加‘&’，否则会警告类型未知。
+```
+(gdb) info registers sp
+sp             0x80203000       0x80203000 <SBI_CONSOLE_PUTCHAR>
+(gdb)  p/x bootstacktop
+'bootstacktop' has unknown type; cast it to its declared type
+(gdb) p/x &bootstacktop
+$1 = 0x80203000
+```
+可以看到，sp 的值 0x80203000 与 bootstacktop 的地址完全一致。这证明了内核的初始栈顶已经被正确设置。
+
+接下来我们观察栈的大小：栈底地址为 0x80201000,栈顶地址为 0x80203000,栈的大小为 0x2000 字节，即 8KB，这与 KSTACKSIZE 的定义相符。
+```
+(gdb) p/x &bootstack
+$2 = 0x80201000
+(gdb) p/x &bootstacktop - &bootstack
+warning: Type size unknown, assuming 1. Try casting to a known type, or void *.
+$3 = 0x2000
+```
+最后我们尝试模拟一个 push 操作，将字符串 "I love OS" 放入栈中。步骤如下：
+1. 字符串 "I love OS" 包含 9 个字符，加上结尾的空字符 \0，共需要 10 个字节。为了保持栈的对齐，我们分配16个字节的空间。
+```
+(gdb) set $sp = $sp - 16
+(gdb) info registers sp
+sp             0x80202ff0       0x80202ff0
+```
+2. 新的栈顶位于 0x80202ff0。我们使用 set 命令将字符串 "I love OS" 写入这个地址。
+```
+set {char[10]}($sp) = "I love OS"
+```
+3. 最后，我们使用 x/s 和 x/16bx 命令来验证字符串是否已成功写入。
+```
+(gdb) x/s $sp
+0x80202ff0:     "I love OS"
+(gdb)  x/16bx $sp
+0x80202ff0:     0x49    0x20    0x6c    0x6f    0x76    0x65    0x20    0x4f
+0x80202ff8:     0x53    0x00    0x00    0x00    0x00    0x00    0x00    0x00
+```
+可以看到，x/s 命令成功地从新的栈顶地址读取到了我们写入的字符串 "I love OS"。
+x/16bx 命令显示了每个字符的 ASCII 码，并在字符串末尾看到了空终止符 0x00。
+#### kern_init函数
+下面，我们继续跟踪代码，程序进入了kern_init阶段。内核初始化第一步是将edata和end之间的空间置零，这个过程通过调用在'string.c'中定义的memset实现。
+```
+=> 0x8020000a <kern_init>:      auipc   a0,0x3
+   0x8020000e <kern_init+4>:    addi    a0,a0,-2
+   0x80200012 <kern_init+8>:    auipc   a2,0x3
+   0x80200016 <kern_init+12>:   addi    a2,a2,-10
+```
+前4行汇编将edata和end的值分别存入a0和a2寄存器，下面对相关内容的查看也验证了这一点。这里汇编代码直接通过当前pc值计算得到edata和end的值（而不是从某个地址获得），这是因为这两段代码是由链接器生成的，链接器直接知道他们的值。
+```
+(gdb) si 4 
+(gdb) p/x &edata
+$6 = 0x80203008
+(gdb) p/x &end  
+$7 = 0x80203008
+(gdb) p/x $a0
+$9 = 0x80203008
+(gdb) p/x $a2
+$10 = 0x80203008
+```
+我们注意到edata=end,由于当前程序没有任何未初始化的全局/静态变量，这是正常现象。
+
+```
+=> 0x8020001a <kern_init+16>:   addi    sp,sp,-16
+   0x8020001c <kern_init+18>:   li      a1,0
+   0x8020001e <kern_init+20>:   sub     a2,a2,a0
+   0x80200020 <kern_init+22>:   sd      ra,8(sp)
+   0x80200022 <kern_init+24>:   jal     ra,0x802004b6 <memset>
+```
+接下来程序进行栈顶指针抬高，返回地址压栈，返回地址保存，函数调用这些基本操作，我们不做赘述。memset的实现与功能较为直观，我们也不做赘述。
+```
+=> 0x80200026 <kern_init+28>:   auipc   a1,0x0
+   0x8020002a <kern_init+32>:   addi    a1,a1,1186
+   0x8020002e <kern_init+36>:   auipc   a0,0x0
+   0x80200032 <kern_init+40>:   addi    a0,a0,1210
+   0x80200036 <kern_init+44>:   jal     ra,0x80200056 <cprintf>
+```
+置零完成后，程序从指定位置读取字符串常量（在链接阶段已经被写入内存）放入指定寄存器并调用cprintf输出"(THU.CST) os is loading ...\n"。
+```
+0x0000000080200036      11          cprintf("%s\n\n", message);
+(gdb) x/s $a0 
+0x802004e8:     "%s\n\n"
+(gdb) x/s $a1 
+0x802004c8:     "(THU.CST) os is loading ...\n"
+```
+我们验证了
+最后，程序通过不断跳转到当前汇编语句实现死循环。我们的最小可执行内核到此成功完成!
+```
+  0x8020003a <kern_init+48>:   j       0x8020003a <kern_init+48>
+```
 
 
 以下是我们认为本次实验中重要的几个知识点：
