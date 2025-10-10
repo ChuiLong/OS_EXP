@@ -139,11 +139,11 @@ $(QEMU) \
 * `-bios default`
   使用 QEMU 自带的 OpenSBI 固件（M 模式运行，初始化硬件，最终把控制权交给 S 模式的“payload”）。
 * `-device loader,file=bin/ucore.img,addr=0x80200000`
-  让 QEMU 在启动时**把你的裸镜像直接拷贝到物理内存地址 `0x8020_0000`**。
+  让 QEMU 在启动时**把裸镜像直接拷贝到物理内存地址 `0x8020_0000`**。
 
-  * 这和 `-kernel` 类似但更“原始”：它**不加 ELF 解析**，就按你给的地址放数据。
-  * 在 `-bios default`（OpenSBI）下，OpenSBI 的“跳转固件”（fw\_jump）会把 S 模式入口设到一个常见约定地址（通常就是你放内核镜像的 `0x8020_0000` 一带），从而跳入你的 `kern_entry`。
-  * 因为你的链接脚本 `tools/kernel.ld` 会把内核的起始虚/物理地址也放在这一带，二者一致，就能**无缝开跑**。
+  * 这和 `-kernel` 类似但更“原始”：它**不加 ELF 解析**，就按我们给出的地址放数据。
+  * 在 `-bios default`（OpenSBI）下，OpenSBI 的“跳转固件”（fw\_jump）会把 S 模式入口设到一个常见约定地址（通常就是放内核镜像的 `0x8020_0000` 一带），从而跳入 `kern_entry`。
+  * 因为链接脚本 `tools/kernel.ld` 会把内核的起始虚/物理地址也放在这一带，二者一致，就能**无缝开跑**。
 
 > 如果改用被注释掉的那行：
 > `# $(QEMU) -kernel $(UCOREIMG) -nographic`
