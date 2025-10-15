@@ -407,7 +407,93 @@ void slub_free_simple(void *objp, size_t size) {
  * slub_check - SLUB测试函数
  */
 void slub_check(void) {
+    cprintf("\n========== SLUB Check (Linux Style) ==========\n");
+    
+    // 先测试底层PMM
+    if (slub_mgr.base_pmm->check) {
+        cprintf("Running base PMM check...\n");
+        slub_mgr.base_pmm->check();
+    }
+    
+    cprintf("\n========== Testing SLUB Two-Layer Allocation ==========\n");
+    
+    // 测试第一层：页级分配
+    cprintf("\n[Test 1] Page-level allocation:\n");
+    struct Page *p0 = slub_alloc_pages(1);
+    struct Page *p1 = slub_alloc_pages(2);
+    assert(p0 && p1);
+    cprintf("  ✓ Page allocation success\n");
+    
+    slub_free_pages(p0, 1);
+    slub_free_pages(p1, 2);
+    cprintf("  ✓ Page free success\n");
+    
+    // 测试第二层：对象级分配
+    cprintf("\n[Test 2] Object-level allocation:\n");
+    void *obj1 = slub_alloc(16);
+    void *obj2 = slub_alloc(64);
+    void *obj3 = slub_alloc(256);
+    assert(obj1 && obj2 && obj3);
+    cprintf("  ✓ Object allocation: 16B=%p, 64B=%p, 256B=%p\n", 
+            obj1, obj2, obj3);
+    
+    slub_free_simple(obj1, 16);
+    slub_free_simple(obj2, 64);
+    slub_free_simple(obj3, 256);
+    cprintf("  ✓ Object free success\n");
+    
+    // 测试批量分配
+    cprintf("\n[Test 3] Batch allocation:\n");
+    void *objs[10];
+    for (int i = 0; i < 10; i++) {
+        objs[i] = slub_alloc(32);
+        assert(objs[i]);
+    }
+    cprintf("  ✓ Allocated 10 x 32B objects\n");
+    
+    for (int i = 0; i < 10; i++) {
+        slub_free_simple(objs[i], 32);
+    }
+    cprintf("  ✓ Freed all objects\n");
+    
+    // 测试边界
+    cprintf("\n[Test 4] Boundary test:\n");
+    void *small = slub_alloc(SLUB_MIN_SIZE);
+    void *large = slub_alloc(SLUB_MAX_SIZE);
+    assert(small && large);
+    cprintf("  ✓ Min/Max allocation success\n");
+    
+    slub_free_simple(small, SLUB_MIN_SIZE);
+    slub_free_simple(large, SLUB_MAX_SIZE);
+    cprintf("  ✓ Min/Max free success\n");
+    
+    slub_print_stats();
+    
+    cprintf("\n========== SLUB Check Passed! ==========\n");
+}
 
+/**
+ * slub_print_stats - 打印统计信息
+ */
+void slub_print_stats(void) {
+    cprintf("\n========== SLUB Statistics ==========\n");
+    cprintf("Total caches: %d\n", SLUB_CACHE_NUM);
+    
+    for (int i = 0; i < SLUB_CACHE_NUM; i++) {
+        struct kmem_cache *s = &slub_mgr.caches[i];
+        cprintf("\nCache[%d] %s:\n", i, s->name);
+        cprintf("  Object size: %d bytes (actual: %d)\n", 
+                (int)s->size, (int)s->object_size);
+        cprintf("  Objects per page: %d\n", s->objects);
+        cprintf("  CPU freelist: %s\n", 
+                s->cpu_slab.freelist ? "has objects" : "empty");
+        cprintf("  CPU partial: %s\n", 
+                s->cpu_slab.partial ? "has slabs" : "empty");
+        cprintf("  Node partial slabs: %lu\n", s->node.nr_partial);
+    }
+    
+    cprintf("\nBase PMM free pages: %d\n", (int)slub_nr_free_pages());
+    cprintf("=====================================\n");
 }
 
 
