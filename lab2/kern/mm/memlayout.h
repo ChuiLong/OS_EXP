@@ -37,23 +37,36 @@ struct Page {
     unsigned int property;          // the num of free block, used in first fit pm manager
     list_entry_t page_link;         // free list link
 };
+/*struct Page {
+    int ref;                        // 引用计数
+    uint64_t flags;                 // 状态标志位
+    unsigned int property;          // 空闲块数量
+    list_entry_t page_link;         // 空闲链表节点
+};*/
 
 /* Flags describing the status of a page frame */
 #define PG_reserved                 0       // if this bit=1: the Page is reserved for kernel, cannot be used in alloc/free_pages; otherwise, this bit=0 
 #define PG_property                 1       // if this bit=1: the Page is the head page of a free memory block(contains some continuous_addrress pages), and can be used in alloc_pages; if this bit=0: if the Page is the the head page of a free memory block, then this Page and the memory block is alloced. Or this Page isn't the head page.
 
-#define SetPageReserved(page)       ((page)->flags |= (1UL << PG_reserved))
-#define ClearPageReserved(page)     ((page)->flags &= ~(1UL << PG_reserved))
-#define PageReserved(page)          (((page)->flags >> PG_reserved) & 1)
-#define SetPageProperty(page)       ((page)->flags |= (1UL << PG_property))
-#define ClearPageProperty(page)     ((page)->flags &= ~(1UL << PG_property))
-#define PageProperty(page)          (((page)->flags >> PG_property) & 1)
+#define SetPageReserved(page)       ((page)->flags |= (1UL << PG_reserved))  // 将页面标记为内核保留
+#define ClearPageReserved(page)     ((page)->flags &= ~(1UL << PG_reserved)) // 清除页面的保留标记
+#define PageReserved(page)          (((page)->flags >> PG_reserved) & 1)     // 检查页面是否被保留
+#define SetPageProperty(page)       ((page)->flags |= (1UL << PG_property))  // 标记页面为空闲块的首页
+#define ClearPageProperty(page)     ((page)->flags &= ~(1UL << PG_property)) // 清除首页标记
+#define PageProperty(page)          (((page)->flags >> PG_property) & 1)     // 检查页面是否为空闲块的首页
 
 // convert list entry to page
+/* 
+当我们有一个 list_entry_t 指针时
+知道它是某个 Page 结构体中的 page_link 成员
+可以通过to_struct计算偏移量找到包含这个 list_entry_t 的 Page 结构体的起始地址
+其中，to_struct在libs/defs.h中定义
+ */
 #define le2page(le, member)                 \
     to_struct((le), struct Page, member)
 
 /* free_area_t - maintains a doubly linked list to record free (unused) pages */
+/* 空闲页面管理与计数 */
 typedef struct {
     list_entry_t free_list;         // the list header
     unsigned int nr_free;           // number of free pages in this free list

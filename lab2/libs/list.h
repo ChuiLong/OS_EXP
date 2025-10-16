@@ -15,7 +15,7 @@
  * */
 
 struct list_entry {
-    struct list_entry *prev, *next;
+    struct list_entry *prev, *next;//定义前指针与后指针
 };
 
 typedef struct list_entry list_entry_t;
@@ -36,6 +36,12 @@ static inline void __list_del(list_entry_t *prev, list_entry_t *next) __attribut
 /* *
  * list_init - initialize a new entry
  * @elm:        new entry to be initialized
+ * 
+ * 初始化链表
+ * 将节点的前后指针都指向自身，形成一个空的循环链表
+ * 使用方法：
+ * list_entry_t head;
+ * list_init(&head);  // 初始化头节点
  * */
 static inline void
 list_init(list_entry_t *elm) {
@@ -50,6 +56,9 @@ list_init(list_entry_t *elm) {
  * Insert the new element @elm *after* the element @listelm which
  * is already in the list.
  * */
+// 使用示例：
+// list_entry_t *new_node = malloc(sizeof(list_entry_t));
+// list_add(&head, new_node);  // 在头节点后插入新节点
 static inline void
 list_add(list_entry_t *listelm, list_entry_t *elm) {
     list_add_after(listelm, elm);
@@ -76,6 +85,9 @@ list_add_before(list_entry_t *listelm, list_entry_t *elm) {
  * Insert the new element @elm *after* the element @listelm which
  * is already in the list.
  * */
+// 在现有节点后插入新节点
+// listelm是插入位置，elm是要插入的新节点
+// 插入在listelm之后，所以elm的前指针指向listelm，后指针指向listelm的后指针
 static inline void
 list_add_after(list_entry_t *listelm, list_entry_t *elm) {
     __list_add(elm, listelm, listelm->next);
@@ -140,9 +152,9 @@ list_prev(list_entry_t *listelm) {
  * */
 static inline void
 __list_add(list_entry_t *elm, list_entry_t *prev, list_entry_t *next) {
-    prev->next = next->prev = elm;
-    elm->next = next;
-    elm->prev = prev;
+    prev->next = next->prev = elm; //插入elm
+    elm->next = next; //elm的前指针指向next
+    elm->prev = prev; //elm的后指针指向prev
 }
 
 /* *
