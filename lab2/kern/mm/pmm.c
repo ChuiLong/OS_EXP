@@ -48,11 +48,20 @@ static void init_memmap(struct Page *base, size_t n) {
 // alloc_pages - call pmm->alloc_pages to allocate a continuous n*PAGESIZE
 // memory
 struct Page *alloc_pages(size_t n) {
+    // 在这里编写你的物理内存分配算法。
+    // 你可以参考nr_free_pages() 函数进行设计，
+    // 了解物理内存管理器的工作原理，然后在这里实现自己的分配算法。
+    // 实现算法后，调用 pmm_manager->alloc_pages(n) 来分配物理内存，
+    // 然后返回分配的 Page 结构指针。
     return pmm_manager->alloc_pages(n);
 }
 
 // free_pages - call pmm->free_pages to free a continuous n*PAGESIZE memory
 void free_pages(struct Page *base, size_t n) {
+    // 在这里编写你的物理内存释放算法。
+    // 你可以参考nr_free_pages() 函数进行设计，
+    // 了解物理内存管理器的工作原理，然后在这里实现自己的释放算法。
+    // 实现算法后，调用 pmm_manager->free_pages(base, n) 来释放物理内存。
     pmm_manager->free_pages(base, n);
 }
 
