@@ -167,8 +167,8 @@ default_init_memmap(struct Page *base, size_t n)
         p->flags = p->property = 0;
         set_page_ref(p, 0);
     }
-    base->property = n;
-    SetPageProperty(base);
+    base->property = n;     // 记录这个空闲块有n个连续页面
+    SetPageProperty(base);  // 标记这个页面是空闲块的首页
     nr_free += n;
     if (list_empty(&free_list))
     {
@@ -178,6 +178,7 @@ default_init_memmap(struct Page *base, size_t n)
     else
     {
         list_entry_t *le = &free_list;
+        // 找合适的位置进行插入
         while ((le = list_next(le)) != &free_list)
         {
             struct Page *page = le2page(le, page_link);
