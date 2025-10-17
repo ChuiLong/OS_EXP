@@ -53,7 +53,7 @@ static void check_alloc_page(void);
  */
 static void init_pmm_manager(void)
 {
-    pmm_manager = &slub_pmm_manager;                       // 设置内存管理器
+    pmm_manager = &best_fit_pmm_manager;                       // 设置内存管理器
     cprintf("memory management: %s\n", pmm_manager->name); // 打印管理器名称
     pmm_manager->init();                                   // 初始化内存管理器
 }
