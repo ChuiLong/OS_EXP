@@ -364,7 +364,7 @@ quick_check 'check physical_memory_map_information'                             
     '  memory: 0x0000000008000000, [0x0000000080000000, 0x0000000087ffffff].'                                  \
 
 pts=20
-quick_check 'check_best_fit'                                       \
+quick_check 'check_buddy_fit'                                       \
     'check_alloc_page() succeeded!'                                  \
     'satp virtual address: 0xffffffffc0204000'                       \
     'satp physical address: 0x0000000080204000'                      \
