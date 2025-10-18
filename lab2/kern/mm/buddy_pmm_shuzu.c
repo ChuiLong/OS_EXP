@@ -217,19 +217,51 @@ buddy_free_pages(struct Page *base, size_t n) {
     }
 }
 
+// 递归统计空闲页数的辅助函数
+// 参数：index - 当前节点索引，node_size - 当前节点管理的块大小
+static size_t
+buddy_count_free_recursive(unsigned index, unsigned node_size) {
+    // 如果当前节点的 longest 值等于 node_size，说明整个子树都是空闲的
+    if (buddy_tree[index] == node_size) {
+        return node_size;
+    }
+    
+    // 如果当前节点 longest == 0，说明整个子树都被分配了
+    if (buddy_tree[index] == 0) {
+        return 0;
+    }
+    
+    // 如果当前节点是叶子节点
+    if (node_size == 1) {
+        return buddy_tree[index];  // 要么是 0（已分配），要么是 1（空闲）
+    }
+    
+    // 否则需要递归统计左右子树
+    unsigned left_index = LEFT_LEAF(index);
+    unsigned right_index = RIGHT_LEAF(index);
+    unsigned child_size = node_size / 2;
+    
+    size_t left_free = buddy_count_free_recursive(left_index, child_size);
+    size_t right_free = buddy_count_free_recursive(right_index, child_size);
+    
+    return left_free + right_free;
+}
+
 static size_t
 buddy_nr_free_pages(void) {
     if (buddy_tree == NULL) {
         return 0;
     }
-    size_t free_count = 0;
-    for (size_t i = 0; i < buddy_tree_pages; i++) {
-        unsigned index = i + buddy_tree_pages - 1;
-        if (buddy_tree[index] > 0 && i < actual_pages) {
-            free_count += buddy_tree[index];
-        }
+    
+    // 从根节点开始递归统计
+    size_t total_free = buddy_count_free_recursive(0, buddy_tree_pages);
+    
+    // 如果虚拟树大于实际页数，需要减去超出部分
+    if (total_free > actual_pages) {
+        return actual_pages;
     }
-    return free_count;
+    
+    return total_free;
 }
 
 static void

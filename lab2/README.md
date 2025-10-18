@@ -207,6 +207,488 @@ struct PerCPUAllocator {
 
 Best-Fit算法通过选择最适合的空闲块来优化空间利用率，但存在时间效率的问题。通过引入索引结构、优化数据结构和改进并发处理，可以在保持其空间效率优势的同时提高时间效率。
 
+## 扩展练习Challenge：buddy-system（伙伴系统）分配算法
+前面介绍的best-fit和first-fit，我们发现虽然它们能够较好地利用内存，但仍存在以下问题：
+
+- 外部碎片问题（External Fragmentation）：
+随着内存的频繁分配和释放，空闲空间被切割得越来越零散，无法满足较大的分配请求，即使总空闲空间足够。
+
+- 合并效率低：
+在释放内存时，需要遍历整个空闲链表来寻找相邻空闲块，合并过程复杂且耗时。
+
+为了解决上述两个问题，我们特别想要尝试一种新的内存分配方式，来更好地平衡和解决这两个问题。这里我们提出**Buddy System**伙伴分配算法。
+
+**Buddy System（伙伴系统）** 是一种兼顾内存利用率与管理效率的动态内存分配算法。
+它的核心思想是：
+
+> 将整个可用内存区域划分为若干个大小为 2 的幂次方的块（block），并通过“伙伴关系”快速进行分裂与合并。
+
+
+
+首先我们简单介绍一下伙伴内存的结构，
+Buddy System把系统中的可用存储空间划分为存储块(Block)来进行管理, 每个存储块的大小必须是2的n次幂(Pow(2, n)), 即1, 2, 4, 8, 16, 32, 64, 128...
+假设系统全部可用空间为Pow(2, k), 那么在Buddy System初始化时将生成一个长度为k + 1的可用空间表List, 并将全部可用空间作为一个大小为Pow(2, k)的块挂接在List的最后一个节点上, 如下图:
+
+![alt text](image.png)
+
+当用户申请size个字的存储空间时, Buddy System分配的Block大小为Pow(2, m)个字大小(Pow(2, m-1) < size < Pow(2,  m)).
+此时Buddy System将在List中的m位置寻找可用的Block. 显然List中这个位置为空, 于是Buddy System就开始寻找向上查找m+1, m+2, 直到达到k为止. 找到k后, 便得到可用Block(k), 此时Block(k)将分裂成两个大小为Pow(k-1)的块, 并将其中一个插入到List中k-1的位置, 同时对另外一个继续进行分裂. 如此以往直到得到两个大小为Pow(2, m)的块为止, 如下图所示:
+
+
+
+![alt text](image-1.png)
+
+如果系统在运行一段时间之后, List中某个位置n可能会出现多个块, 则将其他块依次链接可用块链表的末尾:
+
+
+![alt text](image-2.png)
+
+
+当Buddy System要在n位置取可用块时, 直接从链表头取一个就行了.当一个存储块不再使用时, 用户应该将该块归还给Buddy System. 此时系统将根据Block的大小计算出其在List中的位置, 然后插入到可用块链表的末尾. 在这一步完成后, 系统立即开始合并操作. 该操作是将"伙伴"合并到一起, 并放到List的下一个位置中, 并继续对更大的块进行合并, 直到无法合并为止.
+何谓"伙伴"? 如前所述, 在分配存储块时经常会将一个大的存储块分裂成两个大小相等的小块, 那么这两个小块就称为"伙伴".在Buddy System进行合并时, 只会将互为伙伴的两个存储块合并成大块, 也就是说如果有两个存储块大小相同, 地址也相邻, 但是不是由同一个大块分裂出来的, 也不会被合并起来. 正常情况下, 起始地址为p, 大小为Pow(2, k)的存储块, 其伙伴块的起始地址为: p + Pow(2, k) 和 p - Pow(2, k).
+
+
+总之，伙伴系统的优点是算法简单、速度快；缺点是由于只归并伙伴而容易产生碎片。
+
+接下来，我就从代码实现的角度来分析一下这个程序，根据网上对于Buddy System的介绍，我从链表和二叉树数组两个方向完成了这个任务。首先，我重点从链表的角度介绍一下设计。
+
+### 核心数据结构与边界设定
+
+* 阶（order）上限：`MAX_ORDER=20`，以页为粒度（默认 4KB），最大块大小为 `2^20` 页 ≈ 4GB。这个值只约束“单块的最大阶”，并不限制总可管理页数（`total_pages` 可远大于 `2^20`，此时会有很多 `MAX_ORDER` 的块链表节点）。
+* 空闲链表：`free_list[0..MAX_ORDER]`，每个阶一个循环双链表（`list_entry_t`），配合 `nr_free[i]` 保存块数量，便于 O(1) 得到某阶空闲块数。
+* Page 复用为元数据：块首页（header）的 `property=order` 且 `PageProperty=1`，非首页不设该标记。做到零额外内存开销，完全嵌入式。
+* 全局范围：`buddy_base` 和 `total_pages` 定义了管理的“连续页区间”。所有索引、伙伴定位都以 `buddy_base` 为 0 号页基准。
+
+### 初始化流程（`buddy_init` / `buddy_init_memmap`）
+```c
+static void
+buddy_init(void) {
+    // 初始化所有空闲链表
+    for (int i = 0; i <= MAX_ORDER; i++) {
+        list_init(&free_list[i]);
+        nr_free[i] = 0;
+    }
+    buddy_base = NULL;
+    total_pages = 0;
+}
+
+static void
+buddy_init_memmap(struct Page *base, size_t n) {
+    assert(n > 0);
+    
+    buddy_base = base;
+    total_pages = n;
+    
+    // 初始化所有页面
+    for (size_t i = 0; i < n; i++) {
+        struct Page *p = base + i;
+        assert(PageReserved(p));
+        p->flags = 0;
+        p->property = 0;
+        set_page_ref(p, 0);
+    }
+    
+    // 将内存分解成不同大小的块加入空闲链表
+    // 策略：贪心地分配尽可能大的块
+    size_t remaining = n;
+    struct Page *current = base;
+    
+    while (remaining > 0) {
+        // 找到不超过 remaining 的最大 2 的幂
+        size_t order = 0;
+        while ((1UL << (order + 1)) <= remaining && order < MAX_ORDER) {
+            order++;
+        }
+        
+        size_t block_size = (1UL << order);
+        
+        // 设置块的属性
+        current->property = order;  // property 存储阶数
+        SetPageProperty(current);    // 标记为块首页
+        
+        // 加入对应阶的空闲链表
+        list_add_before(&free_list[order], &(current->page_link));
+        nr_free[order]++;
+        
+        current += block_size;
+        remaining -= block_size;
+    }
+}
+```
+
+
+* `buddy_init`：清空各阶链表及计数器。
+* `buddy_init_memmap(base, n)`：
+
+  * 把 `[base, base+n)` 区间的页面清空状态（清 flags、ref、property），并记录全局基址与总页数。
+  * **关键点：二进制分解式建堆**
+    用“尽可能大的 2 的幂”块从低地址向高地址贪心切分 `n` 页：
+    例如 `n=13` 页 → 8 + 4 + 1 三个块，分别挂到 `order=3、2、0` 的空闲链表。
+    由于从 `buddy_base`（索引 0）开始累进，任意 `2^k` 大小的块起始索引必然满足 `start % 2^k == 0`，从而天然满足 buddy 对齐要求，即使 `n` 本身不是 2 的幂也不影响。
+  * 每个块只在**块首页**设置 `property=order` 与 `PageProperty` 标记并入链表，其他页为普通空闲页。
+
+> 特别要注意的是，为了一定程度上修正Buddy System内部碎片的问题，方案正确地把“非 2 的幂”的物理区间切成若干个对齐的幂次块，满足后续 buddy 算法的假设。
+
+### 分配流程（`buddy_alloc_pages(n)`）
+```c
+buddy_alloc_pages(size_t n) {
+    assert(n > 0);
+    
+    if (n > total_pages) {
+        return NULL;
+    }
+    
+    // 计算需要的阶数（向上取整到2的幂）
+    size_t order = order_of_size(n);
+    
+    if (order > MAX_ORDER) {
+        return NULL;
+    }
+    
+    // 从 order 开始查找空闲块
+    size_t current_order = order;
+    while (current_order <= MAX_ORDER) {
+        if (!list_empty(&free_list[current_order])) {
+            // 找到空闲块
+            list_entry_t *le = list_next(&free_list[current_order]);
+            struct Page *page = le2page(le, page_link);
+            list_del(le);
+            nr_free[current_order]--;
+            ClearPageProperty(page);
+            
+            // 如果块太大，需要分裂
+            while (current_order > order) {
+                current_order--;
+                size_t buddy_size = (1UL << current_order);
+                struct Page *buddy = page + buddy_size;
+                
+                // 设置分裂出的右半部分
+                buddy->property = current_order;
+                SetPageProperty(buddy);
+                list_add(&free_list[current_order], &(buddy->page_link));
+                nr_free[current_order]++;
+            }
+            
+            // 清理分配出去的页面
+            for (size_t i = 0; i < n; i++) {
+                struct Page *p = page + i;
+                p->flags = 0;
+                set_page_ref(p, 0);
+            }
+            
+            return page;
+        }
+        current_order++;
+    }
+    
+    return NULL;  // 没有足够的内存
+}
+```
+* 需求阶计算：`order_of_size(n)` 近似 `ceil(log2(n))`。实现用迭代 `(size+1)/2` 直到 1，**对 1、2、3、…、5 等都能得到正确阶**（如 `n=3→order=2`）。
+* 选择块：从 `current_order=order` 开始往上找**首个非空**链表；找到后取出一个块，清除其 `PageProperty`（不再是空闲块）。
+* 逐级拆分：若拿到的块阶比目标大，则**只对右半部分**形成空闲块：
+
+  * 令 `current_order--`，右半块起始 `buddy = page + (1 << current_order)`；
+  * 为右半块设置 `property=current_order` 和 `PageProperty`，入 `free_list[current_order]`。
+  * 重复直到降到目标阶。
+* 清理页状态：代码仅对前 `n` 页清 flags/ref。**注意**：实际分配的最小单位是 `2^order` 页；理想状况是清理整个 `2^order`，但只清 `n` 也不会破坏正确性（详见“改进建议”）。
+
+**复杂度**：
+
+* 最坏找到可用阶 O(MAX\_ORDER)（常量 21）；
+* 拆分次数最多 O(MAX\_ORDER)；
+* 因而分配整体 O(log N)（N≈总页数）。
+
+### 释放与合并（`buddy_free_pages(base, n)`）
+对于这个函数：
+* `base` 必须是之前通过 `alloc_pages` 返回的**块首地址**（即当时分配的左半块首页）。
+* `n > 0`，且**调用者传回的 n 对应的阶**与当初分配时的阶一致（或“同阶等价”，例如分配 3 页→上取整 4 页；回收传 `n=3`、`n=4` 都对应 `order=2`，可视为一致）。
+* 管理区间 `[buddy_base, buddy_base + total_pages)` 已在 `buddy_init_memmap` 初始化。
+
+在回收目标时，
+
+* 恢复该块到空闲链表，**若伙伴满足条件则多级合并**，以减少外部碎片。
+* 保持不变量：
+
+  1. 空闲链只挂**块头**；
+  2. 块头 `property == order`；
+  3. `nr_free[order]` 与链表元素数相符；
+  4. 区间安全与对齐安全。
+接下来我们逐行进行分析，
+
+#### 基本卫护
+
+```c
+assert(n > 0);
+if (buddy_base == NULL || base < buddy_base || base >= buddy_base + total_pages) {
+    return;  // 非法地址
+}
+```
+
+* 短路拒绝**未初始化**或**越界释放**。这里“return”而非“assert”有更强的容错性（不崩溃内核）；但也意味着**双重释放/野指针**不会当场爆雷（见 §6 风险）。
+
+#### 求阶与对齐约束
+
+```c
+size_t order = order_of_size(n);
+size_t block_size = (1UL << order);
+size_t page_idx = base - buddy_base;
+
+if (page_idx & (block_size - 1)) {
+    return;  // 未对齐，非法释放
+}
+```
+
+* `order_of_size` 等价 `ceil(log2(n))`：即把 n 上取整到最小 2^k。
+* **对齐检查的本质**：任何 `2^k` 大小的块，其块头索引必满足 `page_idx % 2^k == 0`。
+
+  * 这一步将大量“错误 n”拦截掉：若调用者传了更小阶（如本应 2^4=16 页，却传 n=9→order=4 仍能通过），则**仍可能误过检**；但若传的阶更大（n→order 更大），对齐极易失败被拒绝。
+
+
+#### 伙伴定位与合并循环
+
+```c
+struct Page *page = base;
+
+while (order < MAX_ORDER) {
+    size_t buddy_idx = page_idx ^ (1UL << order);
+    if (buddy_idx >= total_pages) break;
+
+    struct Page *buddy = buddy_base + buddy_idx;
+
+    if (!PageProperty(buddy) || buddy->property != order) {
+        break;  // 伙伴不空闲或大小不匹配
+    }
+
+    list_del(&(buddy->page_link));
+    nr_free[order]--;
+    ClearPageProperty(buddy);
+
+    if (page_idx > buddy_idx) {
+        page = buddy;         // 低地址作为新块头
+        page_idx = buddy_idx;
+    }
+
+    order++;
+    block_size <<= 1;
+}
+```
+
+* 在 Buddy 中，**同阶块**以 `2^order` 为粒度分组，**组内一对**相邻块的索引仅在第 `order` 位不同。
+* 把块头索引 `page_idx` 的第 `order` 位取反，即 `page_idx ^ (1<<order)`，得到**同组另一半**块的块头索引。
+* 因为 `page_idx` 已保证 `2^order` 对齐（低 `order` 位为 0），所以 `buddy_idx` 必然也是 `2^order` 对齐，且两者相邻、共同组成一个 `2^(order+1)` 超块。
+
+#### 两个必要条件确保“只对合法伙伴合并”
+
+1. `PageProperty(buddy)`：伙伴**必须是空闲块头**。
+2. `buddy->property == order`：伙伴**必须是同阶**。
+
+   * 这可阻断“把正在被拆分、或不同阶零散块误当伙伴”的情况。
+
+#### 合并后的块头选择
+
+* 取**低地址**作为新块头：
+
+  * 这样新块头仍满足 `2^(order+1)` 对齐（因为两个 `2^order` 头索引仅在该位不同，低地址必把该位清零），不变量得以递归保持。
+
+在终止条件的完整性上，我们保证：
+
+* 越界（`buddy_idx >= total_pages`）→停；
+* 伙伴不空闲/不同阶→停；
+* 达到 `MAX_ORDER`→停。
+* **单调性**：每次合并 `order++`，块大小翻倍，循环**最多 O(log N)** 次。
+
+#### 回挂与计数
+
+```c
+page->property = order;
+SetPageProperty(page);
+list_add(&free_list[order], &(page->page_link));
+nr_free[order]++;
+```
+
+* 将合并后的**最终块头**入对阶链，恢复 `PageProperty`。
+* 计数与链表同步更新，保证 `buddy_nr_free_pages()` 的可加总一致性。
+
+
+接下来我们从理论上分析一下这个策略的正确性：
+1. **对齐充要**：
+   若 `base` 是一个 `2^k` 大小块的块头，则 `page_idx % 2^k == 0`；反之，一个满足该对齐的 `page_idx` 若由 `alloc_pages` 产生，必为某级块头（在“无非法写”的假设下）。
+2. **伙伴闭包性**：
+   若两个 `2^k` 块头 `i` 与 `j` 的索引只在第 `k` 位不同（即 `j = i ^ 2^k`），且二者空闲，则合并生成的 `2^(k+1)` 超块其块头为 `min(i, j)`，必 `2^(k+1)` 对齐。
+3. **不变量保持**：
+   合并前把伙伴从链表移除并计数 `--`；合并结束后把新块头入链计数 `++`。每轮保持“链表元素 × 块大小”的总页数不变，直到回收结束。
+4. **无交叉合并**：
+   由于每次只会与**唯一 XOR 伙伴**匹配，且要求伙伴同阶、空闲，因此不会与其他块交叉合并，避免“多源汇聚”。
+
+
+接下来我们分析一下时空复杂度：
+
+* **时间**：
+
+  * 定位伙伴 + 条件检查：每阶 O(1)；
+  * 最多合并到 `MAX_ORDER`：O(log N)。
+* **空间**：
+
+  * 不新增 per-block 结构，复用 `struct Page` 中 `property` 与 `PageProperty` 位；
+  * 仅调整链表指针，O(1)。
+
+
+### 统计（`buddy_nr_free_pages`）
+```c
+buddy_nr_free_pages(void) {
+    size_t total = 0;
+    for (int i = 0; i <= MAX_ORDER; i++) {
+        total += nr_free[i] * (1UL << i);
+    }
+    return total;
+}
+```
+* 通过 `Σ nr_free[i] * (1<<i)` 计算总空闲页数，**与 buddy 结构一致**，不会漏算。
+
+### 自测用例（`buddy_check`）
+为了验证正确性，我写了一个基础的自测用例，用于验证我的内存模型设计正确性，具体地说，这个测试用例涵盖了以下的内容：
+* 分配/释放基本正确性（Test 1），并核对 `nr_free_pages()` 前后相等。
+* **非 2 的幂**请求（Test 2）：3→4，5→8，7→8，验证向上取整策略。
+* 伙伴合并（Test 3）：先分配 4×1 页，按伙伴对释放，随后能拿到 2 页连续块。
+* **内存耗尽**（Test 4）：尝试超过可用页数或“吃光”所有可用页；覆盖超配失败与“完全占满后再次分配失败”的路径。
+* 边界值（Test 5）：1 页与较大块（16 页）。
+* 碎片-整理（Test 6）：制造碎片、验证在进一步释放后能申请更大连续块。
+* 顺序性（Test 7）：检查是否大致按地址递增（Buddy 不保证严格顺序，因此“INFO 可接受”的判断合理）。
+
+整体来看，测试覆盖了核心路径与若干边界情形，基本扎实。
+
+除此之外，考虑到传统链表版在释放阶段强依赖调用者提供正确的 n 值、以及当内存规模较大时链表维护的分散性问题，我还设计了一个基于完全二叉树的 Buddy System 实现，旨在通过统一的数组结构显式记录每个子树的最大可用块大小，从而在 O(log N) 时间内完成分配与合并操作，同时避免对调用参数 n 的依赖，提升算法的鲁棒性与诊断性。
+
+接下来，我将重点讲解这两种 Buddy System 的不同设计思路、数据结构组织方式以及它们在空间开销、回收策略、可扩展性等方面的权衡与优缺点分析。
+
+
+#### 状态表示（`buddy_tree[]` = “最长可用”段）
+
+
+* 用一棵“**虚拟满二叉树**”覆盖 `buddy_tree_pages = 2^k` 个叶子，每个节点存该子树“**最大可用连续块大小**”（单位：页），非 2 的幂通过补虚拟叶（置 0）兜底。
+* 与“多条空闲链（按阶）”不同，这里**只有一份数组**，通过“最长”信息在 O(logN) 时间里导引到可分配节点。
+
+**关键代码**
+
+* 初始化“满二叉树”并按层赋值（根最大，往下对半）：
+
+  ```c
+  unsigned node_size = buddy_tree_pages * 2;
+  for (size_t i = 0; i < buddy_tree_size; i++) {
+      if (IS_POWER_OF_2(i + 1)) node_size /= 2;
+      buddy_tree[i] = node_size;
+  }
+  ```
+* 把越界叶（补出来的虚拟页）置 0，**并回溯刷新**所有祖先的“最长”：
+
+  ```c
+  if (buddy_tree_pages > actual_pages) {
+      for (size_t i = actual_pages; i < buddy_tree_pages; i++) {
+          unsigned idx = i + buddy_tree_pages - 1;
+          buddy_tree[idx] = 0;
+      }
+      // 回溯刷新祖先
+      ...
+  }
+  ```
+
+* “最长值”是一种**贪心导航指标**：只需看左右子最大谁能满足就往哪走，不必列举每阶链表。
+* 溢出页置 0 + 回溯，保证“非幂规模”区间不会被错误分配。
+* 树的空间开销约 `2 * 2^k - 1 ≈ 2N` 个 `unsigned`，比“链表+page 元数据”**更整洁，且无 per-order 头结点**。
+
+
+#### 分配路径（`buddy_alloc_pages`）
+
+* 需求 `n` **上取整**到 `size = 2^order`（这是标准 Buddy 语义）。
+* 自根向下，**先看左子**是否能满足（“最长”>= `size`），能则下左，否则下右；直到命中恰好 `node_size == size` 的节点。
+* 命中节点置 0（表示该子树没有可用块），**向上回溯**父节点的“最长 = max(左右)”即可。
+
+**关键代码**
+
+```c
+unsigned size = fixsize(n);
+if (buddy_tree[0] < size) return NULL; // 根不够
+
+unsigned index = 0, node_size = buddy_tree_pages;
+for (; node_size != size; node_size /= 2) {
+    unsigned l = LEFT_LEAF(index), r = RIGHT_LEAF(index);
+    index = (buddy_tree[l] >= size) ? l : r;
+}
+
+// 命中节点置 0
+buddy_tree[index] = 0;
+
+// 回溯刷新祖先“最长”
+while (index) {
+    index = PARENT(index);
+    buddy_tree[index] = MAX(buddy_tree[LEFT_LEAF(index)], buddy_tree[RIGHT_LEAF(index)]);
+}
+```
+
+* **左优先**使地址偏向低端，利于整体“紧凑”并提升大块成功率（但不保证严格递增）。
+* **时间复杂度 O(logN)**，只走树高，和“多阶链表里找第一个可用块”复杂度相当但更规整。
+* **映射 index→页偏移**用的是
+
+  ```c
+  offset = (index + 1) * node_size - buddy_tree_pages;
+  ```
+
+  这来自满二叉树“层次序索引”的叶区起点在 `[buddy_tree_pages-1, ...]` 的性质（可视作标准堆数组 + 子树跨度）。
+
+#### 释放与合并（`buddy_free_pages`）
+
+
+* 与“链表版本”按 `order`/对齐去找**唯一 XOR 伙伴**不同，二叉树版**不依赖传入 n**：从“叶对应索引”一路往上，**找到第一个 `buddy_tree[index] == 0` 的节点**，这就是当初**整块分配**时置 0 的那个节点。
+* 把该节点恢复为其 `node_size`，再**自底向上**地做“**两子都满**则合并，否则取 `max(left,right)`”。
+
+**关键代码**
+
+```c
+unsigned node_size = 1;
+unsigned index = (base - buddy_base) + buddy_tree_pages - 1;
+
+// 向上找到“当初被分配”的节点：第一个 longest==0
+for (; buddy_tree[index] != 0; index = PARENT(index)) {
+    node_size *= 2;
+    if (index == 0) return; // 没找到：重复释放或参数错误
+}
+
+// 复原该节点为“满空闲”
+buddy_tree[index] = node_size;
+
+// 回溯合并
+while (index != 0) {
+    unsigned parent = PARENT(index);
+    node_size <<= 1;
+    unsigned L = buddy_tree[LEFT_LEAF(parent)];
+    unsigned R = buddy_tree[RIGHT_LEAF(parent)];
+    buddy_tree[parent] = (L + R == node_size) ? node_size : MAX(L, R);
+    index = parent;
+}
+```
+
+* “**first-zero** 节点即当初分配点”这一性质成立的关键：**分配时只把命中节点置 0，而不去改动子树更低层的叶/子**，因此自叶往上总会在**块边界**处撞到 0。
+* 释放时没有显式 `order` 概念，**支持 n≠2^k 的传参**（你也在注释里说明了 3/4、5/8 的“同阶等价”）。
+
+
+#### 统计方法
+为了稳健地统计空闲页数，我选择使用递归统计的方式保证结果的正确性，具体算法流程如下：
+
+对任意节点 u（子树容量为 S(u)），记该子树的真实空闲页总数为 F(u)。你递归函数返回 G(u)。
+
+若 buddy_tree[u] == 0：根据维护规则，这代表“整棵子树无空闲”，F(u)=0；函数返回 0，所以 G(u)=F(u)。
+
+若 buddy_tree[u] == S(u)：根据维护规则，这代表“整棵子树全空闲”，F(u)=S(u)；函数返回 S(u)，所以 G(u)=F(u)。
+
+若 0 < buddy_tree[u] < S(u)：根据维护规则，“部分空闲”，函数递归两子 l,r，返回 G(l)+G(r)；
+由结构归纳假设 G(l)=F(l), G(r)=F(r)，故 G(u)=F(l)+F(r)=F(u)。
+
+根节点 root 也满足上述三种情形之一，因此 G(root)=F(root)，即递归返回的就是系统总空闲页数。
+
+注意这也解释了为什么不需要在最后再 min(total_free, actual_pages)：只要树维护不变量成立，G(root) 就等于真实空闲总页数，自然 ≤ actual_pages。如果出现更大的值，说明树状态坏了，应该暴露问题而不是被截断掩盖。
+
+完整的两份代码请查看仓库代码。到此为止，我们的伙伴内存分配器就设计完毕了！
 # 扩展练习Challenge：任意大小的内存单元SLUB分配算法
 
 ## 1. SLUB分配算法理论基础
