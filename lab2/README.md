@@ -795,6 +795,7 @@ static struct Page* slub_alloc_pages(size_t n) {
 }
 ```
 
+![alt text](01.png)
 该算法实现了基于状态的内存分配策略，其核心机制是通过维护slab的三种状态（部分分配、完全分配和空闲）来优化内存分配过程。具体而言，当系统接收到内存分配请求时，算法遵循以下分配原则：
 
 首先，算法会优先从部分分配（partial）的slab中分配内存，这种策略有效利用了已经激活的内存页面，不仅减少了内存碎片，还提高了缓存的命中率。当partial slab中的对象被完全分配后，该slab会自动转换为完全分配（full）状态，并被移至full_list中管理。
@@ -804,6 +805,7 @@ static struct Page* slub_alloc_pages(size_t n) {
 ### 3.3 回收算法
 
 SLUB分配器的内存释放过程的核心在于如何高效地管理对象的生命周期、维护slab的状态一致性。
+
 
 ```c
 static void slub_free_pages(struct Page *base, size_t n) {
@@ -836,6 +838,8 @@ static void slub_free_pages(struct Page *base, size_t n) {
     nr_free += n;
 }
 ```
+
+![alt text](02.png)
 该释放算法通过以下几个关键步骤实现了高效的内存回收：
 
 首先，通过重置页面的基本属性（`flags = 0`和引用计数清零），确保页面能够安全地进入可重分配状态。释放算法采用LIFO（后进先出）策略来管理空闲对象链表，这种方式不仅通过简单的指针操作（`*(void **)object = slub->freelist`）实现了O(1)时间复杂度的对象插入，还有效地维护了内存访问的空间局部性。
