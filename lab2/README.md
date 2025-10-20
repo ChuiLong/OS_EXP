@@ -688,7 +688,98 @@ while (index != 0) {
 
 注意这也解释了为什么不需要在最后再 min(total_free, actual_pages)：只要树维护不变量成立，G(root) 就等于真实空闲总页数，自然 ≤ actual_pages。如果出现更大的值，说明树状态坏了，应该暴露问题而不是被截断掩盖。
 
-完整的两份代码请查看仓库代码。到此为止，我们的伙伴内存分配器就设计完毕了！
+完整的两份代码请查看仓库代码。到此为止，我们的伙伴内存分配器就设计完毕了！我们运行我们设计的全面的check程序，发现结果合理！验证了我们程序的正确性。 其中，我们发现satp相比best-fit分配算法和first-fit分配算法的satp地址往后移动了1000h，恰好是一个页的大小，这一冲突恰恰反映了我们设计的合理性：
+
+初始化时，buddy 管理区与元数据（buddy_tree）占了低端页	在 buddy_init_memmap 中把 buddy_tree 放在 base + n * sizeof(Page) 之后，这部分页在物理上被标记为“已占用”。因此真正的可分配起点被推迟，alloc_page() 第一次返回的页地址自然更高。同时由于编程时的内存页对齐要求，内存的分配会以页单位来进行，因此小于一页的内容会占据一页，恰好符合我们的分析！
+
+
+验证结果如下：
+```bash
+
+OpenSBI v0.4 (Jul  2 2019 11:53:53)
+   ____                    _____ ____ _____
+  / __ \                  / ____|  _ \_   _|
+ | |  | |_ __   ___ _ __ | (___ | |_) || |
+ | |  | | '_ \ / _ \ '_ \ \___ \|  _ < | |
+ | |__| | |_) |  __/ | | |____) | |_) || |_
+  \____/| .__/ \___|_| |_|_____/|____/_____|
+        | |
+        |_|
+
+Platform Name          : QEMU Virt Machine
+Platform HART Features : RV64ACDFIMSU
+Platform Max HARTs     : 8
+Current Hart           : 0
+Firmware Base          : 0x80000000
+Firmware Size          : 112 KB
+Runtime SBI Version    : 0.1
+
+PMP0: 0x0000000080000000-0x000000008001ffff (A)
+PMP1: 0x0000000000000000-0xffffffffffffffff (A,R,W,X)
+DTB Init
+HartID: 0
+DTB Address: 0x82200000
+Physical Memory from DTB:
+  Base: 0x0000000080000000
+  Size: 0x0000000008000000 (128 MB)
+  End:  0x0000000087ffffff
+DTB init completed
+(THU.CST) os is loading ...
+Special kernel symbols:
+  entry  0xffffffffc02000d8 (virtual)
+  etext  0xffffffffc0201830 (virtual)
+  edata  0xffffffffc0206018 (virtual)
+  end    0xffffffffc0206080 (virtual)
+Kernel executable memory footprint: 24KB
+memory management: buddy_pmm_manager
+physcial memory map:
+  memory: 0x0000000008000000, [0x0000000080000000, 0x0000000087ffffff].
+buddy_check: comprehensive allocation test
+Total free pages: 31929 (%.2f MB)
+
+[Test 1] Basic allocation and deallocation
+  allocated 1 page: 0xffffffffc020f318
+  allocated 2 pages: 0xffffffffc020f368
+  allocated 4 pages: 0xffffffffc020f3b8
+  freed all pages
+  [PASS] Memory fully recovered
+
+[Test 2] Non-power-of-2 allocation (auto round up)
+  requested 3 pages, allocated 4 pages: 0xffffffffc020f318
+  requested 5 pages, allocated 8 pages: 0xffffffffc020f458
+  requested 7 pages, allocated 8 pages: 0xffffffffc020f598
+  [PASS] Non-power-of-2 allocation succeeded
+
+[Test 3] Buddy merge mechanism
+  allocated 4 separate 1-page blocks
+  freed 2 buddy blocks (should merge)
+  allocated 2-page block after merge: 0xffffffffc020f318
+  [PASS] Buddy merge test succeeded
+
+[Test 4] Memory exhaustion handling
+  current max allocatable pages: 31929
+  [PASS] Correctly rejected over-sized allocation (32768 pages)
+  [INFO] Skipped full memory allocation (max_pages too large)
+
+[Test 5] Boundary value testing
+  [PASS] Single page allocation
+  [PASS] Large block (16 pages) allocation
+
+[Test 6] Fragmentation and defragmentation
+  created fragmented memory (freed p0, p2)
+  [PASS] 2-page allocation succeeded
+
+[Test 7] Allocation order consistency
+  [PASS] Allocations follow ascending address order
+
+========================================
+buddy_check: ALL TESTS PASSED!
+========================================
+check_alloc_page() succeeded!
+satp virtual address: 0xffffffffc0205000
+satp physical address: 0x0000000080205000
+```
+
 # 扩展练习Challenge：任意大小的内存单元SLUB分配算法
 
 ## 1. SLUB分配算法理论基础
@@ -885,15 +976,134 @@ SLUB分配器的核心优势体现在以下方面：
 
 通过这些优化，SLUB分配器将能更好地适应现代计算系统的需求。
 
-在操作系统无法从设备树或固件获取物理内存信息时，需要通过主动探测的方式确定可用的物理内存范围。下面将详细介绍一种基于位模式测试的高效内存探测方法。
+
 
 # 扩展练习Challenge：硬件的可用物理内存范围的获取方法
+## 调用固件接口
+系统的物理内存布局通常由固件负责描述并提供给操作系统。
+不同的系统平台，使用不同的固件接口：
 
-如果操作系统（OS）或其引导加载程序（Bootloader）在启动初期无法通过BIOS/UEFI等固件接口提前获取物理内存的布局信息，它必须主动进行 **内存探测（Memory Probing）** 来确定可用物理内存的起始地址和结束地址。这个过程的核心思想，是通过向内存地址写入特定的位模式并回读校验，从而判断该地址是否对应着真实、可用的物理内存。
+| 平台          | 固件类型             | 提供方式                        |
+| ----------- | ---------------- | --------------------------- |
+| 传统 PC       | BIOS             | 通过中断 `INT 0x15` 调用获取        |
+| 现代 PC / 服务器 | UEFI             | 通过 `GetMemoryMap()` 接口返回    |
+| 嵌入式 / SoC   | Bootloader / 设备树 | 固定配置、寄存器或设备树（Device Tree）描述 |
+
+操作系统在引导时会调用这些接口，得到一张详细的物理内存描述表：
+每一项都包含一个起始地址、长度和类型字段，告诉系统该区间是否可以使用。
+
+### BIOS 模式下的内存获取方法
+BIOS（Basic Input/Output System）是早期 PC 平台的启动固件。
+当系统上电后，BIOS 负责硬件自检（POST），并通过中断向操作系统或引导加载器提供基础服务。
+在内存探测方面，BIOS 提供了多个中断子功能，但只有 **E820h** 能完整描述全部物理内存布局。
+
+BIOS 中断号为 `INT 0x15`，子功能号为 `EAX=0xE820`。
+调用方式如下：
+
+```asm
+mov eax, 0xE820
+mov edx, 0x534D4150     ; 'SMAP' 签名
+mov ecx, sizeof(buffer)  ; 缓冲区大小
+mov edi, buffer_address  ; 缓冲区地址
+int 0x15
+jc  error                ; CF=1 表示出错
+```
+
+BIOS 在返回时，会在缓冲区写入一个结构体，表示一段物理内存：
+
+```c
+struct e820_entry {
+    uint64_t addr;   // 起始物理地址
+    uint64_t size;   // 区间长度（字节）
+    uint32_t type;   // 内存类型
+};
+```
+
+返回后，通过 `EBX` 寄存器提供“下一条记录指针”，调用者需循环调用该中断，直到 BIOS 返回 `EBX=0` 表示结束。
+
+
+| type 值 | 含义                 | 是否可用          |
+| ------ | ------------------ | ------------- |
+| 1      | 可用普通内存（Usable RAM） | 可用             |
+| 2      | 保留区（Reserved）      | 不可用             |
+| 3      | ACPI 可回收区          | 可用 （系统初始化后可回收） |
+| 4      | ACPI NVS 区         | 不可用             |
+| 5      | 内存映射 I/O 区         | 不可用             |
+
+系统启动后，只能在 type=1 或部分 type=3 区域上分配页框。
+
+
+### UEFI 模式下的内存映射获取（GetMemoryMap）
+
+UEFI（Unified Extensible Firmware Interface）是 BIOS 的继任者，它提供了更现代的接口模型。
+UEFI 在系统启动时运行于保护模式，内核或加载器通过调用 Boot Services 函数获取系统资源信息。
+
+其中最关键的函数是：
+
+```c
+EFI_BOOT_SERVICES.GetMemoryMap()
+```
+
+该函数返回系统当前所有物理内存段的描述信息。
+
+```c
+typedef struct {
+    UINT32 Type;
+    EFI_PHYSICAL_ADDRESS PhysicalStart;
+    EFI_VIRTUAL_ADDRESS VirtualStart;
+    UINT64 NumberOfPages;
+    UINT64 Attribute;
+} EFI_MEMORY_DESCRIPTOR;
+```
+
+每个描述符对应一段内存区域，单位是“页”（通常 4KB）。
+
+获取流程可以概括如下：
+
+1. 调用一次 `GetMemoryMap()` 获取所需缓冲区大小；
+2. 分配合适的缓冲区；
+3. 再次调用 `GetMemoryMap()` 获取完整列表；
+4. 遍历所有 `EFI_MEMORY_DESCRIPTOR`；
+5. 记录所有类型为 `EfiConventionalMemory` 的段；
+6. 计算每段的起止页号并注册到内核物理内存管理器。
+
+
+
+
+### 使用设备树（Device Tree）
+
+在 ARM、RISC-V 等 SoC 平台上，启动加载器（如 U-Boot）会传递一份 **设备树（Device Tree Blob, DTB）**，
+其中的 `/memory` 节点描述了系统的内存范围，例如：
+
+```dts
+memory {
+    device_type = "memory";
+    reg = <0x80000000 0x08000000>;  // 起始地址 0x80000000, 大小 128MB
+};
+```
+
+内核解析该节点，即可得到物理内存布局。
+
+### 硬件寄存器与 MMIO 探测
+
+某些平台（如 MIPS、PowerPC）在片上寄存器中记录了内存容量信息，
+通过访问这些 MMIO 地址，操作系统可读取实际内存大小。
+
+例如（伪代码）：
+
+```c
+uint32_t mem_size = *(volatile uint32_t*)MEMORY_INFO_REG;
+```
+
+## 上述方法失效时——内存探测
+在操作系统无法从设备树或固件获取物理内存信息时，需要通过主动探测的方式确定可用的物理内存范围。下面将详细介绍一种基于位模式测试的高效内存探测方法。
+
+
+当操作系统（Operating System, OS）在启动初期无法从 BIOS、UEFI、设备树（Device Tree, DT）或其他固件接口中获取物理内存布局信息时，必须依靠自举式的 **内存探测（Memory Probing）**机制 来确定系统中可用物理内存的起始地址与上限范围。这个过程的核心思想，是通过向内存地址写入特定的位模式并回读校验，从而判断该地址是否对应着真实、可用的物理内存。
 
 这套探测机制可以归纳为一个连续的“ 写入-回读-验证 ”的循环过程。OS会从一个已知的、肯定存在的低地址（例如物理地址0）开始，逐步向高地址进行探测。在每一个探测的地址上，它会执行一系列操作来确认内存的有效性和可靠性。
 
-为什么“ 写入-回读-验证 ”的整个过程就能够说明这段内存地址是可用的？因为从一个无效地址（浮动总线）上恰好读回我们试图写入的一段内容的概率非常低。因此，当我们写入一段内容并能稳定地读回一段内容时，就建立了一个强有力的证据：这个地址背后有一个能可靠存储并返回数据的物理设备，也就是内存。
+为什么“ 写入-回读-验证 ”的整个过程就能够说明这段内存地址是可用的？其基本思想基于下面的情况：若向某物理地址写入特定数据后能够正确回读相同内容，则可以推断该地址背后存在一个可存储数据的物理存储单元。反之，若读回的数据不一致或引发访问异常，则该地址可能为空洞、MMIO 区域或越过了物理内存边界。
 
 为了确保探测的准确性，仅仅使用单一的数据模式（如全0或全1）是不够的，因为它可能无法检测出所有类型的硬件故障，例如数据线之间的短路或某些位“卡死”在0或1的状态。因此，我们需要采用更严谨的测试模式，其中最经典的就是互补位模式测试：OS会对一个内存单元执行以下操作：
 
@@ -910,3 +1120,4 @@ SLUB分配器的核心优势体现在以下方面：
 
 
 OS会不断重复这个探测过程，依次递增内存地址（通常以页或更大的块为单位以提高效率）。当探测到一个写入和回读结果不一致的地址时，通常就意味着遇到了物理内存的边界，或者是一个无效的内存空洞、以及映射给硬件设备（MMIO）的地址空间。通过记录下最后一个成功的地址，OS就能确定这段连续物理内存的上限，从而构建出整个系统的物理内存映射图（Memory Map），为后续的内存管理初始化工作打下基础。
+
