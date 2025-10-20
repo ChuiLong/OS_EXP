@@ -848,8 +848,164 @@ static void slub_free_pages(struct Page *base, size_t n) {
 
 上述内存释放算法通过巧妙的状态转换设计和高效的链表操作，实现了快速的内存释放和对象重用，并保持了系统的内存使用效率。
 
+## 4. 测试
 
-## 4. 总结
+为了验证 SLUB 分配器的正确性和效率，我们设计了一系列测试用例，覆盖了页级分配、对象级分配、批量分配和边界条件等多种场景。以下是详细的测试输出和结果分析。
+
+```
+========== Testing SLUB Two-Layer Allocation ==========
+
+[Test 1] Page-level allocation:
+slub_alloc_pages: 1 pages at 0xffffffffc0210340
+slub_alloc_pages: 2 pages at 0xffffffffc0210390
+  ✓ Page allocation success
+slub_free_pages: 1 pages at 0xffffffffc0210340
+slub_free_pages: 2 pages at 0xffffffffc0210390
+  ✓ Page free success
+
+[Test 2] Object-level allocation:
+__slab_alloc: slow path for kmem_cache_16
+  -> allocate new slab
+slub_alloc_pages: 1 pages at 0xffffffffc0210340
+init_slab_page: cache=kmem_cache_16, page=0xffffffffc0210340, freelist=0xffffffffc0348000
+new_slab: allocated for cache kmem_cache_16
+kmem_cache_alloc: slow path, object=0xffffffffc0348000 from kmem_cache_16
+__slab_alloc: slow path for kmem_cache_64
+  -> allocate new slab
+slub_alloc_pages: 1 pages at 0xffffffffc0210368
+init_slab_page: cache=kmem_cache_64, page=0xffffffffc0210368, freelist=0xffffffffc0349000
+new_slab: allocated for cache kmem_cache_64
+kmem_cache_alloc: slow path, object=0xffffffffc0349000 from kmem_cache_64
+__slab_alloc: slow path for kmem_cache_256
+  -> allocate new slab
+slub_alloc_pages: 1 pages at 0xffffffffc0210390
+init_slab_page: cache=kmem_cache_256, page=0xffffffffc0210390, freelist=0xffffffffc034a000
+new_slab: allocated for cache kmem_cache_256
+kmem_cache_alloc: slow path, object=0xffffffffc034a000 from kmem_cache_256
+  ✓ Object allocation: 16B=0xffffffffc0348000, 64B=0xffffffffc0349000, 256B=0xffffffffc034a000
+kmem_cache_free: object=0xffffffffc0348000 to kmem_cache_16
+  -> page becomes empty
+  -> moved to node partial
+kmem_cache_free: object=0xffffffffc0349000 to kmem_cache_64
+  -> page becomes empty
+  -> moved to node partial
+kmem_cache_free: object=0xffffffffc034a000 to kmem_cache_256
+  -> page becomes empty
+  -> moved to node partial
+  ✓ Object free success
+
+[Test 3] Batch allocation:
+__slab_alloc: slow path for kmem_cache_32
+  -> allocate new slab
+slub_alloc_pages: 1 pages at 0xffffffffc02103b8
+init_slab_page: cache=kmem_cache_32, page=0xffffffffc02103b8, freelist=0xffffffffc034b000
+new_slab: allocated for cache kmem_cache_32
+kmem_cache_alloc: slow path, object=0xffffffffc034b000 from kmem_cache_32
+kmem_cache_alloc: fast path, object=0xffffffffc034b020 from kmem_cache_32
+kmem_cache_alloc: fast path, object=0xffffffffc034b040 from kmem_cache_32
+kmem_cache_alloc: fast path, object=0xffffffffc034b060 from kmem_cache_32
+kmem_cache_alloc: fast path, object=0xffffffffc034b080 from kmem_cache_32
+kmem_cache_alloc: fast path, object=0xffffffffc034b0a0 from kmem_cache_32
+kmem_cache_alloc: fast path, object=0xffffffffc034b0c0 from kmem_cache_32
+kmem_cache_alloc: fast path, object=0xffffffffc034b0e0 from kmem_cache_32
+kmem_cache_alloc: fast path, object=0xffffffffc034b100 from kmem_cache_32
+kmem_cache_alloc: fast path, object=0xffffffffc034b120 from kmem_cache_32
+  ✓ Allocated 10 x 32B objects
+kmem_cache_free: object=0xffffffffc034b000 to kmem_cache_32
+kmem_cache_free: object=0xffffffffc034b020 to kmem_cache_32
+kmem_cache_free: object=0xffffffffc034b040 to kmem_cache_32
+kmem_cache_free: object=0xffffffffc034b060 to kmem_cache_32
+kmem_cache_free: object=0xffffffffc034b080 to kmem_cache_32
+kmem_cache_free: object=0xffffffffc034b0a0 to kmem_cache_32
+kmem_cache_free: object=0xffffffffc034b0c0 to kmem_cache_32
+kmem_cache_free: object=0xffffffffc034b0e0 to kmem_cache_32
+kmem_cache_free: object=0xffffffffc034b100 to kmem_cache_32
+kmem_cache_free: object=0xffffffffc034b120 to kmem_cache_32
+  -> page becomes empty
+  -> moved to node partial
+  ✓ Freed all objects
+
+[Test 4] Boundary test:
+kmem_cache_alloc: fast path, object=0xffffffffc0348000 from kmem_cache_16
+__slab_alloc: slow path for kmem_cache_2048
+  -> allocate new slab
+slub_alloc_pages: 1 pages at 0xffffffffc02103e0
+init_slab_page: cache=kmem_cache_2048, page=0xffffffffc02103e0, freelist=0xffffffffc034c000
+new_slab: allocated for cache kmem_cache_2048
+kmem_cache_alloc: slow path, object=0xffffffffc034c000 from kmem_cache_2048
+  ✓ Min/Max allocation success
+kmem_cache_free: object=0xffffffffc0348000 to kmem_cache_16
+  -> page becomes empty
+  -> moved to node partial
+kmem_cache_free: object=0xffffffffc034c000 to kmem_cache_2048
+  -> page becomes empty
+  -> moved to node partial
+  ✓ Min/Max free success
+```
+
+### 测试结果分析
+
+根据提供的 SLUB 测试输出日志，我们可以详细分析每项测试的内容及其结果，以验证 SLUB 分配器实现的正确性。
+
+#### [Test 1] 页级分配 (Page-level allocation)
+
+- **测试目的**: 验证 SLUB 分配器底层页分配和回收的正确性。
+- **测试过程**:
+    1.  调用 `slub_alloc_pages` 分别申请 1 个和 2 个物理页。
+    2.  调用 `slub_free_pages` 释放先前申请的物理页。
+- **结果分析**:
+    - 日志显示 `slub_alloc_pages` 成功分配了指定数量的页，并打印了它们的起始地址。
+    - `slub_free_pages` 也成功执行，表明页的回收功能正常。
+    - `✓ Page allocation success` 和 `✓ Page free success` 标志着此基础功能通过测试。
+
+#### [Test 2] 对象级分配 (Object-level allocation)
+
+- **测试目的**: 验证 SLUB 的核心功能，即从不同大小的 `kmem_cache` 中分配和释放单个对象。
+- **测试过程**:
+    1.  分别从 `kmem_cache_16`、`kmem_cache_64` 和 `kmem_cache_256` 中申请一个对象。
+    2.  释放这三个对象。
+- **结果分析**:
+    - **分配阶段**:
+        - 对于每种大小的对象，日志显示 `__slab_alloc: slow path`。这表示当前没有可用的 slab，因此分配器需要走“慢速路径”。
+        - “慢速路径”触发了 `-> allocate new slab` 流程，即通过 `slub_alloc_pages` 申请一个新的物理页来创建 slab。
+        - `init_slab_page` 日志表明新页被初始化为一个 slab，并设置了空闲对象链表 `freelist`。
+        - `kmem_cache_alloc: slow path, object=...` 显示了最终分配给用户的对象地址。
+    - **释放阶段**:
+        - `kmem_cache_free` 被调用以释放对象。
+        - 日志 `-> page becomes empty` 表明在释放对象后，该 slab 变为空闲状态。
+        - `-> moved to node partial` 表示空闲的 slab 页被归还到 `kmem_cache_node` 的 `partial` 链表中，以便后续可以被重新利用。
+    - `✓ Object allocation success` 和 `✓ Object free success` 确认了对象分配和释放的核心逻辑正确无误。
+
+#### [Test 3] 批量分配 (Batch allocation)
+
+- **测试目的**: 验证在同一个 slab 内进行多次连续分配（快速路径）和释放的场景。
+- **测试过程**:
+    1.  从 `kmem_cache_32` 中连续申请 10 个对象。
+    2.  将这 10 个对象全部释放。
+- **结果分析**:
+    - **分配阶段**:
+        - 第一次分配走了 `slow path`，因为需要创建一个新的 slab。
+        - 随后的 9 次分配都走了 `kmem_cache_alloc: fast path`。这表明分配器成功地从 CPU 缓存的 `freelist` 中快速获取了空闲对象，无需再次创建 slab 或访问全局 `kmem_cache_node`，验证了 `fast path` 的有效性。
+    - **释放阶段**:
+        - 连续释放 10 个对象后，日志显示 `-> page becomes empty` 和 `-> moved to node partial`，表明整个 slab 被正确地回收。
+    - `✓ Allocated 10 x 32B objects` 和 `✓ Freed all objects` 证明了批量操作的正确性和 `fast path` 机制的有效性。
+
+#### [Test 4] 边界测试 (Boundary test)
+
+- **测试目的**: 验证分配器对支持的最小和最大尺寸对象的处理能力。
+- **测试过程**:
+    1.  从 `kmem_cache_16`（最小尺寸之一）中申请一个对象。
+    2.  从 `kmem_cache_2048`（较大尺寸）中申请一个对象。
+    3.  释放这两个对象。
+- **结果分析**:
+    - `kmem_cache_16` 的分配走了 `fast path`，因为它重用了之前测试中已创建并变为空闲的 slab。
+    - `kmem_cache_2048` 的分配走了 `slow path`，创建了一个新的 slab。
+    - 两个对象的分配和释放均成功，表明分配器对于不同尺寸规格的 slab 都能正确处理。
+    - `✓ Min/Max allocation success` 和 `✓ Min/Max free success` 确认了分配器在边界条件下的稳定性。
+
+
+
+## 5. 总结
 
 我们的SLUB分配器通过分层次内存管理机制，实现了以下优势：
 

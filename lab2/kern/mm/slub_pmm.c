@@ -55,8 +55,8 @@ void slub_init(void) {
     cprintf("Initializing SLUB allocator...\n");
     
     // 设置底层页分配器
-    extern const struct pmm_manager default_pmm_manager;
-    slub_mgr.base_pmm = &default_pmm_manager;
+    extern const struct pmm_manager buddy_pmm_manager;
+    slub_mgr.base_pmm = &buddy_pmm_manager;
     
     // 调用底层初始化
     if (slub_mgr.base_pmm->init) {
@@ -142,12 +142,11 @@ size_t slub_nr_free_pages(void) {
     return slub_mgr.base_pmm->nr_free_pages();
 }
 
-// ==================== 第二层：对象级分配（Linux SLUB核心）====================
+// ==================== 第二层：对象级分配====================
 
 /**
  * get_freepointer - 获取对象中存储的下一个对象指针
  * 
- * Linux SLUB核心技巧：指针内置
  * 在空闲对象的开头（offset位置）存储下一个空闲对象的地址
  */
 void *get_freepointer(struct kmem_cache *s, void *object) {
@@ -163,7 +162,6 @@ void set_freepointer(struct kmem_cache *s, void *object, void *fp) {
 
 /**
  * get_kmem_cache - 根据大小选择合适的cache
- * 类似Linux的kmalloc_index()
  */
 struct kmem_cache *get_kmem_cache(size_t size) {
     size = SLUB_ALIGN_SIZE(size);
@@ -216,7 +214,7 @@ static void init_slab_page(struct kmem_cache *s, struct Page *page) {
 /**
  * new_slab - 从伙伴系统分配新slab
  * 
- * Linux SLUB流程：
+ * 流程：
  * 1. 从伙伴系统分配页
  * 2. 初始化slab（建立freelist）
  * 3. 返回page结构
