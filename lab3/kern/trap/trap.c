@@ -163,11 +163,15 @@ void exception_handler(struct trapframe *tf) {
             break;
         case CAUSE_ILLEGAL_INSTRUCTION:
              // 非法指令异常处理
-             /* LAB3 CHALLENGE3   YOUR CODE :  */
+             /* LAB3 CHALLENGE3   YOUR CODE : 2311534 */
             /*(1)输出指令异常类型（ Illegal instruction）
              *(2)输出异常指令地址
              *(3)更新 tf->epc寄存器
             */
+            // 使用 epc 作为异常指令地址，stval(badvaddr) 作为非法指令编码/相关值
+            cprintf("Illegal instruction at 0x%08x\n", tf->epc);
+            // 根据 stval 低两位判断指令长度：低两位==3 表示 32 位，否则可能是 16 位压缩指令
+            tf->epc += ((tf->badvaddr & 0x3) == 0x3) ? 4 : 2;
             break;
         case CAUSE_BREAKPOINT:
             //断点异常处理
