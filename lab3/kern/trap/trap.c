@@ -8,7 +8,7 @@
 #include <riscv.h>
 #include <stdio.h>
 #include <trap.h>
-
+#include <sbi.h>
 #define TICK_NUM 100
 
 static void print_ticks() {
