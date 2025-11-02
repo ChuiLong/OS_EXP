@@ -64,6 +64,12 @@ int kern_init(void) {
         ;
 }
 
+/*
+这里添加了测试代码和字符串常量！这些额外的代码和字符串会增加 .rodata 和 .text 段的大小，
+导致后续的 .data 和 .bss 段向后移动，最终影响 boot_page_table_sv39 的地址。
+*/
+
+
 void __attribute__((noinline))
 grade_backtrace2(int arg0, int arg1, int arg2, int arg3) {
     mon_backtrace(0, NULL, NULL);
