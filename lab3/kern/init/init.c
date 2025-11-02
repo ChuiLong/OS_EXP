@@ -32,6 +32,30 @@ int kern_init(void) {
 
     idt_init();  // init interrupt descriptor table
 
+    // LAB3 CHALLENGE3: 测试异常处理
+    cprintf("\n========== Testing Exception Handlers ==========\n");
+    
+    // 测试1: 触发断点异常 (ebreak)
+    cprintf("\n--- Test 1: Triggering breakpoint exception ---\n");
+    asm volatile("ebreak");
+    cprintf("Breakpoint exception handled successfully!\n");
+    
+    // 测试2: 触发非法指令异常
+    cprintf("\n--- Test 2: Triggering illegal instruction exception ---\n");
+    // 使用一个标准的非法32位指令 (低2位为11，表示32位指令格式)
+    // 0xFFFFFFFF 是一个保留的非法指令编码
+    asm volatile(".word 0xFFFFFFFF");
+    cprintf("Illegal instruction exception handled successfully!\n");
+    
+    cprintf("\n========== Exception Tests Completed ==========\n\n");
+
+    cprintf("\n--- Test 3: Triggering illegal instruction exception ---\n");
+    // 使用一个标准的非法32位指令 (低2位为11，表示32位指令格式)
+    // 0xFFFFFFFF 是一个保留的非法指令编码
+    asm volatile(".word 0x00000000");
+    cprintf("Illegal instruction exception handled successfully!\n");
+    
+    cprintf("\n========== Exception Tests Completed ==========\n\n");
     clock_init();   // init clock interrupt
     intr_enable();  // enable irq interrupt
 

@@ -9,7 +9,6 @@
 #include <stdio.h>
 #include <trap.h>
 #include <sbi.h>
-
 #define TICK_NUM 100
 
 static void print_ticks() {
@@ -163,9 +162,12 @@ void exception_handler(struct trapframe *tf) {
              *(2)输出异常指令地址
              *(3)更新 tf->epc寄存器
             */
-            // 使用 epc 作为异常指令地址，stval(badvaddr) 作为非法指令编码/相关值
+            cprintf("Exception type:Illegal instruction\n");
             cprintf("Illegal instruction at 0x%08x\n", tf->epc);
-            // 根据 stval 低两位判断指令长度：低两位==3 表示 32 位，否则可能是 16 位压缩指令
+            // 对于非法指令，badvaddr(stval)存储的是指令本身的编码
+            // 根据 RISC-V 编码规则：指令低2位为11(0x3)表示32位指令，否则是16位压缩指令
+            // 注意：0x00000000 的低2位是00，所以会被误判为压缩指令
+            // 更准确的做法是读取指令内存，或者对于非法指令统一按32位处理
             tf->epc += ((tf->badvaddr & 0x3) == 0x3) ? 4 : 2;
             break;
         case CAUSE_BREAKPOINT:
@@ -175,6 +177,7 @@ void exception_handler(struct trapframe *tf) {
              *(2)输出异常指令地址
              *(3)更新 tf->epc寄存器
             */
+            cprintf("Exception type: breakpoint\n");
             cprintf("ebreak caught at 0x%08x\n", tf->epc);
          // 根据 stval 低两位判断指令长度：低两位==3 表示 32 位，否则可能是 16 位压缩指令
             tf->epc += ((tf->badvaddr & 0x3) == 0x3) ? 4 : 2;
