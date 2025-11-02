@@ -8,6 +8,7 @@
 #include <riscv.h>
 #include <stdio.h>
 #include <trap.h>
+#include <sbi.h>
 
 #define TICK_NUM 100
 
@@ -19,39 +20,18 @@ static void print_ticks() {
 #endif
 }
 
-/* idt_init - initialize IDT to each of the entry points in kern/trap/vectors.S
- */
 void idt_init(void) {
-    /* LAB3 YOUR CODE : STEP 2 */
-    /* (1) Where are the entry addrs of each Interrupt Service Routine (ISR)?
-     *     All ISR's entry addrs are stored in __vectors. where is uintptr_t
-     * __vectors[] ?
-     *     __vectors[] is in kern/trap/vector.S which is produced by
-     * tools/vector.c
-     *     (try "make" command in lab3, then you will find vector.S in kern/trap
-     * DIR)
-     *     You can use  "extern uintptr_t __vectors[];" to define this extern
-     * variable which will be used later.
-     * (2) Now you should setup the entries of ISR in Interrupt Description
-     * Table (IDT).
-     *     Can you see idt[256] in this file? Yes, it's IDT! you can use SETGATE
-     * macro to setup each item of IDT
-     * (3) After setup the contents of IDT, you will let CPU know where is the
-     * IDT by using 'lidt' instruction.
-     *     You don't know the meaning of this instruction? just google it! and
-     * check the libs/x86.h to know more.
-     *     Notice: the argument of lidt is idt_pd. try to find it!
-     */
-
     extern void __alltraps(void);
-    /* Set sup0 scratch register to 0, indicating to exception vector
-       that we are presently executing in the kernel */
+    //约定：若中断前处于S态，sscratch为0
+    //若中断前处于U态，sscratch存储内核栈地址
+    //那么之后就可以通过sscratch的数值判断是内核态产生的中断还是用户态产生的中断
+    //我们现在是内核态所以给sscratch置零
     write_csr(sscratch, 0);
-    /* Set the exception vector address */
+    //我们保证__alltraps的地址是四字节对齐的，将__alltraps这个符号的地址直接写到stvec寄存器
     write_csr(stvec, &__alltraps);
 }
 
-/* trap_in_kernel - test if trap happened in kernel */
+/* trap_in_kernel - test if trap happened in kernel 检测中断是否在kernel态发生 */
 bool trap_in_kernel(struct trapframe *tf) {
     return (tf->status & SSTATUS_SPP) != 0;
 }
@@ -101,7 +81,7 @@ void print_regs(struct pushregs *gpr) {
 }
 
 void interrupt_handler(struct trapframe *tf) {
-    intptr_t cause = (tf->cause << 1) >> 1;
+    intptr_t cause = (tf->cause << 1) >> 1; //抹掉scause最高位代表“这是中断不是异常”的1
     switch (cause) {
         case IRQ_U_SOFT:
             cprintf("User software interrupt\n");
@@ -222,11 +202,12 @@ void exception_handler(struct trapframe *tf) {
 }
 
 static inline void trap_dispatch(struct trapframe *tf) {
+    //scause的最高位是1（小于0），说明trap是由中断引起的
     if ((intptr_t)tf->cause < 0) {
-        // interrupts
+        // interrupts 中断
         interrupt_handler(tf);
     } else {
-        // exceptions
+        // exceptions 异常
         exception_handler(tf);
     }
 }

@@ -50,6 +50,7 @@ static void init_memmap(struct Page *base, size_t n) {
 struct Page *alloc_pages(size_t n) {
     struct Page *page = NULL;
     bool intr_flag;
+    // 先关闭中断，然后进行对应操作，最后重新开启中断
     local_intr_save(intr_flag);
     {
         page = pmm_manager->alloc_pages(n);
