@@ -3,6 +3,7 @@
         "*.dbclient-js": "javascript",
         "*.embeddedhtml": "html",
         "stdarg.h": "c",
-        "type_traits": "c"
+        "type_traits": "c",
+        "kdebug.h": "c"
     }
 }
