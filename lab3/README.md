@@ -59,15 +59,7 @@ SAVE_ALL 在栈上的保存布局我们定义的 struct trapframe 严格一致�
 
 ## 四、是否需要在 __alltraps 中对任何中断都保存所有寄存器
 
-我们不必在 __alltraps 中对所有中断一律保存所有寄存器，但是保存所有寄存器的值能够在出现其他问题时更方便地进行调试，恢复中断/异常出现的场景，具体原因如下：
-### 不需要保存所有寄存器的原因
-从返回正确性的最低需求看，我们只需保证保存并恢复 sstatus、sepc、陷入前的 sp，以及可能被处理路径破坏的通用寄存器即可；在上述过程中 scause 与 stval 不参与返回流程，理论上可在处理中通过 read_csr 临时读取而不入栈。
-
-并且，在恢复操作 RESTORE_ALL 中，我们也仅恢复 sstatus/sepc 与各通用寄存器中的值，并不恢复 scause/stval。
-
-### 保存所有寄存器更加安全的原因
-中断/异常陷入后进入 C 处理并可能经历多层调用链，只有全量快照才能保证任意路径变化下都能无损恢复现场；若在处理中重新开中断、允许嵌套陷入或发生调度/抢占，外层的 scause/stval 与寄存器会被新一次陷入覆盖，内存中的 trapframe 才是唯一可靠的历史状态；同时，保存 scause/stval 寄存器便于打印与问题复现；此外，调试时查看完整的寄存器状态有助于定位问题，尤其是在复杂的中断处理逻辑中。
-综上所述，虽然并非所有寄存器都必须保存以保证正确返回，但为了系统的健壮性与调试便利性，通常建议在 __alltraps 中保存所有寄存器的值。
+在我们本次实验的实现中，我们应在 alltraps 统一保存全部通用寄存器以及 sstatus、sepc、scause、stval，这样能够保持代码的健壮性。入口通过 jal 调用 C 函数 trap(tf) 后，处理路径会执行 cprintf、clock_set_next_event 等复杂调用链，这些函数按 RISC‑V ABI 会任意改写 caller-saved 寄存器（t0–t6、a0–a7），甚至可能因代码演进误用而破坏 callee-saved 寄存器（s0–s11），只有 SAVE_ALL 构造的完整 trapframe 快照才能保证 RESTORE_ALL 按原样无损恢复被中断现场。同时，trap.c 的所有分发与调试逻辑完全依赖 trapframe 作为唯一上下文载体：print_trapframe 需要逐项打印 gpr/status/epc/badvaddr/cause，trap_in_kernel 通过 tf->status 的 SSTATUS_SPP 判断特权级，exception_handler 依据 tf->cause 分支并用 tf->badvaddr 低两位决定 epc 前移量（区分 16/32 位指令），若不在入口就把 scause/stval 抄到内存，处理过程中一旦发生新的陷入，外层的 CSR 值会被覆盖而丢失首次现场。尽管 RESTORE_ALL 只写回 sstatus/sepc 与各 GPR（scause/stval 不参与返回语义），但它们对错误日志与诊断必不可少。
 
 ## Challenge 2：理解上下文切换机制
 ### 练习要求
