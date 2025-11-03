@@ -1,4 +1,74 @@
 # lab3
+# 练习1
+## 一、定时器中断处理的流程
+
+在本次 Lab3 的代码中，对定时器中断处理的整体流程如下：
+
+kern_entry 在汇编态保存 hartid/DTB 地址、设置 Sv39 页表与内核栈并刷新 TLB，然后跳转至 kern_init。
+
+进入 kern_init，我们调用 idt_init 将 sscratch 置零并把 stvec 指向 __alltraps，建立统一陷入入口，之后，再调用 clock_init 函数，使能 sie 的 STIE 位，我们在 clock_init 函数中再调用 clock_set_next_event 通过 SBI set_timer 写入“绝对触发时刻”，初始化 ticks 并打印“++ setup timer interrupts”。intr_enable 置位 sstatus.SIE，中断总开关开启，系统开始响应中断来源。
+
+时间推进到预约时刻时，硬件比较 time 与固件写入的 stimecmp，当 time≥目标值，sip 中的 STIP 被置位并触发陷入，处理器根据 stvec 跳转到 __alltraps。入口例程执行 SAVE_ALL：先把旧 sp 临时写入 sscratch，再为 trapframe 预留空间并按预定义布局依次保存 32 个通用寄存器以及 sstatus、sepc、stval、scause；完成保存后将当前 sp（即 trapframe 起始地址）经 mv a0,sp 传递给 C 语言层的 trap(tf)，通过 jal trap 进入分发逻辑。
+
+trap 依据 scause 的最高位判断“中断”属性并进入 interrupt_handler。当触发时钟中断时，程序会进入 IRQ_S_TIMER 分支，调用 clock_set_next_event 预约下一次时钟事件，ticks 自增以记录全局时钟节拍；当 ticks 达到 100 的整数倍，print_ticks 输出“100 ticks”，并在打印累计 10 次后通过 sbi_shutdown 请求关机。如果是其他中断或异常，处理完成后返回到 __trapret，按 RESTORE_ALL 顺序恢复通用寄存器与关键 CSR，最终执行 sret，依据 sepc/sstatus 恢复到陷入前的执行点继续运行。
+
+## 二、trap.c 中时钟中断分支的实现方式
+
+我们需要按照以下要求修改代码内容：每累计 100 次触发一次打印“100 ticks”，并在打印满 10 次后通过 SBI 关机。核心代码位于 interrupt_handler 对 IRQ_S_TIMER 的处理：
+
+```c
+case IRQ_S_TIMER:
+    /* 续约 → 计数 → 条件打印 → 条件关机 */
+    { static int num = 0;
+      clock_set_next_event();   // 续约下一次时钟中断：固件同时清除 STIP
+      ticks++;                  // 全局节拍自增，类型为 volatile size_t
+      if (ticks % TICK_NUM == 0) {
+          print_ticks();        // 观测输出“100 ticks”，
+          num++;
+          if (num == 10) {
+              sbi_shutdown();   // 满 10 次后关机
+          }
+      }
+    }
+    break;
+```
+
+上述代码的实现过程如下：
+- 续约下一次时钟中断：首先clock_set_next_event()预约下一个时钟中断触发点，该函数通过 SBI set_timer 写入绝对时间，OpenSBI 会清除 STIP，硬件就绪后才会再次触发时钟中断。
+- 保持计数器的一致性：ticks 定义于 clock.c，volatile 语义防止编译器重排与寄存缓存，确保在中断上下文下的可见性；
+- 打印：当 ticks 增加100次，意味着此时已经触发了100次时钟中断，便会调用 print_ticks() 。
+- 关机：使用静态局部计数 num 记录“已打印次数”，达到 10 后调用 sbi_shutdown，通过 ecall 委托 M 态固件完成关机，避免在 S 态直接访问设备状态。
+
+以下是程序运行时的结果截图：
+![alt text](result.png)
+可以看到在设置时钟调用之后，每触发 100 次时钟调用就会打印 “100 ticks”，当运行到第 10 次打印后，系统成功调用 SBI 接口关机，符合预期设计。
+# Challenge 1：描述与理解中断流程
+
+## 一、从异常/中断产生到返回的处理流程
+
+处理器检测到异常/中断后在 scause 写入原因并在 sip/stip 中标记“待处理中断”，随后依据 stvec 跳转至统一入口 __alltraps，并以 sscratch 暂存陷入前的 sp，按预设 trapframe 布局在线程栈上依次保存 32 个通用寄存器与 sstatus、sepc、stval、scause，并将 trapframe 指针放入 a0 传递给 trap(tf)。trap(tf) 依据 scause 最高位区分中断与异常并分发：比如我们本次练习一中的时钟中断会进行续约下一次事件、维护 ticks 与观测输出等处理过程；异常路径按类型修正 epc。处理结束后返回到 __trapret，恢复 sstatus 与 sepc，再按 trapframe 回填所有通用寄存器，执行 sret 返回至陷入前的 PC；SIE 在陷入时被硬件清零，返回时按 SPIE 恢复，实现中断异常产生到处理的完整流程。
+
+## 二、move a0, sp 的目的
+
+该指令将当前 sp（指向栈上已构造完成的 trapframe）传递到 a0，使得后续调用的 C 函数 trap(tf) 能以 a0 作为参数获得 trapframe 起始地址，从而读取/修改通用寄存器与 CSR 备份，实现对异常/中断处上下文正确的保存与恢复。
+
+## 三、SAVE_ALL 中寄存器的栈上位置如何确定
+
+SAVE_ALL 在栈上的保存布局我们定义的 struct trapframe 严格一致：先按 struct pushregs 顺序快照 32 个通用寄存器，随后依次写入 status（sstatus）、epc（sepc）、badvaddr（stval）、cause（scause）。每个槽位大小由 REGBYTES 固定（在 RISC‑V 64 位为 8 字节），汇编以 STORE xN, KREGBYTES(sp) 的偏移写入，K 的取值与结构体字段一一对应；其中 sp 槽位保存的是陷入前的“旧 sp”，做法是先将旧 sp 暂存于 sscratch，再写回到 trapframe 对应位置以确保可逆恢复。
+
+
+## 四、是否需要在 __alltraps 中对任何中断都保存所有寄存器
+
+我们不必在 __alltraps 中对所有中断一律保存所有寄存器，但是保存所有寄存器的值能够在出现其他问题时更方便地进行调试，恢复中断/异常出现的场景，具体原因如下：
+### 不需要保存所有寄存器的原因
+从返回正确性的最低需求看，我们只需保证保存并恢复 sstatus、sepc、陷入前的 sp，以及可能被处理路径破坏的通用寄存器即可；在上述过程中 scause 与 stval 不参与返回流程，理论上可在处理中通过 read_csr 临时读取而不入栈。
+
+并且，在恢复操作 RESTORE_ALL 中，我们也仅恢复 sstatus/sepc 与各通用寄存器中的值，并不恢复 scause/stval。
+
+### 保存所有寄存器更加安全的原因
+中断/异常陷入后进入 C 处理并可能经历多层调用链，只有全量快照才能保证任意路径变化下都能无损恢复现场；若在处理中重新开中断、允许嵌套陷入或发生调度/抢占，外层的 scause/stval 与寄存器会被新一次陷入覆盖，内存中的 trapframe 才是唯一可靠的历史状态；同时，保存 scause/stval 寄存器便于打印与问题复现；此外，调试时查看完整的寄存器状态有助于定位问题，尤其是在复杂的中断处理逻辑中。
+综上所述，虽然并非所有寄存器都必须保存以保证正确返回，但为了系统的健壮性与调试便利性，通常建议在 __alltraps 中保存所有寄存器的值。
+
 ## Challenge 2：理解上下文切换机制
 ### 练习要求
 回答：在trapentry.S中汇编代码 csrw sscratch, sp；csrrw s0, sscratch, x0实现了什么操作，目的是什么？save all里面保存了stval scause这些csr，而在restore all里面却不还原它们？那这样store的意义何在呢？

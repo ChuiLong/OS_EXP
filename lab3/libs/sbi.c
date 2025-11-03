@@ -12,6 +12,7 @@ uint64_t SBI_REMOTE_SFENCE_VMA = 6;
 uint64_t SBI_REMOTE_SFENCE_VMA_ASID = 7;
 uint64_t SBI_SHUTDOWN = 8;
 
+// 用于在 S 模式内核通过 ecall 向 M 模式的固件
 uint64_t sbi_call(uint64_t sbi_type, uint64_t arg0, uint64_t arg1, uint64_t arg2) {
     uint64_t ret_val;
     __asm__ volatile (
@@ -32,6 +33,7 @@ void sbi_console_putchar(unsigned char ch) {
     sbi_call(SBI_CONSOLE_PUTCHAR, ch, 0, 0);
 }
 
+//当time寄存器(rdtime的返回值)为stime_value的时候触发一个时钟中断
 void sbi_set_timer(unsigned long long stime_value) {
     sbi_call(SBI_SET_TIMER, stime_value, 0, 0);
 }

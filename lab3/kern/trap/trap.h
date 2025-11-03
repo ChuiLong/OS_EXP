@@ -40,13 +40,13 @@ struct pushregs {
 
 struct trapframe {
     struct pushregs gpr;
-    uintptr_t status;
-    uintptr_t epc;
-    uintptr_t badvaddr;
-    uintptr_t cause;
+    uintptr_t status;       //sstatus 寄存器的备份（特权级、中断使能等状态）
+    uintptr_t epc;          //sepc，陷入前将要执行的指令地址（返回点）
+    uintptr_t badvaddr;     //stval/sbadaddr，引发异常相关的地址
+    uintptr_t cause;        //scause，陷入原因
 };
 
-void trap(struct trapframe *tf);
+void trap(struct trapframe *tf); //真正的中断处理函数
 void idt_init(void);
 void print_trapframe(struct trapframe *tf);
 void print_regs(struct pushregs* gpr);
