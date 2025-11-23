@@ -195,7 +195,15 @@ void proc_run(struct proc_struct *proc)
          *   lsatp():                   Modify the value of satp register
          *   switch_to():              Context switching between two processes
          */
-
+        bool intr_flag;
+        struct proc_struct *prev = current, *next = proc;
+        local_intr_save(intr_flag);                    // 禁用中断
+        {
+            current = proc;                            // 切换当前进程为要运行的进程
+            lsatp(next->pgdir);                        // 切换页表，以便使用新进程的地址空间
+            switch_to(&(prev->context), &(next->context)); // 实现上下文切换
+        }
+        local_intr_restore(intr_flag);                 // 允许中断
     }
 }
 
