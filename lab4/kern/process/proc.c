@@ -205,7 +205,6 @@ void proc_run(struct proc_struct *proc)
             switch_to(&(prev->context), &(next->context)); // 实现上下文切换
         }
         local_intr_restore(intr_flag);                 // 允许中断
-
     }
 }
 
@@ -358,44 +357,11 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
      *   nr_process:   the number of process set
      */
     //    1. call alloc_proc to allocate a proc_struct
-    if ((proc = alloc_proc()) == NULL) {
-        goto fork_out;
-    }
-    // 关联父进程
-    proc->parent = current;
-    
     //    2. call setup_kstack to allocate a kernel stack for child process
-    // 为子进程分配内核栈
-    if (setup_kstack(proc) != 0) {
-        goto bad_fork_cleanup_proc;
-    }
-    
     //    3. call copy_mm to dup OR share mm according clone_flag
-    // 按 clone_flags 决定复制或共享地址空间
-    if (copy_mm(clone_flags, proc) != 0) {
-        goto bad_fork_cleanup_kstack;
-    }
-    
     //    4. call copy_thread to setup tf & context in proc_struct
-    // 设置 trapframe 与上下文
-    copy_thread(proc, stack, tf);
-    
     //    5. insert proc_struct into hash_list && proc_list
-    bool intr_flag;
-    // 将 proc 插入链表 proc_list 和哈希表 hash_list
-    local_intr_save(intr_flag);
-    {
-        proc->pid = get_pid();
-        hash_proc(proc);
-        list_add(&proc_list, &(proc->list_link));
-        nr_process++;
-    }
-    local_intr_restore(intr_flag);
-    
     //    6. call wakeup_proc to make the new child process RUNNABLE
-    // 将 proc->state 置为 PROC_RUNNABLE
-    wakeup_proc(proc);
-    
     //    7. set ret vaule using child proc's pid
     ret = proc->pid;
     

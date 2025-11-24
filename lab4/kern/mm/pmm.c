@@ -225,6 +225,7 @@ void pmm_init(void)
 在传入的页表 pgdir 中查找虚拟地址 la 对应的叶子 PTE 的内核虚地址指针
 当 create 为 true 时，缺失的中间页表页会按需分配并初始化
 */
+// 取出 PTE→若无效且允许则分配→填入新页表地址→继续索引
 pte_t *get_pte(pde_t *pgdir, uintptr_t la, bool create)
 {
     //找到对应的Giga Page大大页
@@ -322,6 +323,7 @@ void page_remove(pde_t *pgdir, uintptr_t la)
 // note: PT is changed, so the TLB need to be invalidate
 /*
 在页表 pgdir 中把物理页 struct Page *page 映射到线性地址 la，权限由 perm 指定
+页表层面”的映射建立与删除——也就是把虚拟地址映射到物理页，
 */
 int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm)
 {
@@ -335,9 +337,9 @@ int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm)
     page_ref_inc(page);//指向这个物理页面的虚拟地址增加了一个
     if (*ptep & PTE_V)
     {
-        //原先存在映射
+        //原先存在映射，需要减少原先的引用计数
         struct Page *p = pte2page(*ptep);
-        //如果这个映射原先就有
+        //如果这个映射原先就有，那么需要减少原先的引用计数
         if (p == page)
         {
             page_ref_dec(page);
