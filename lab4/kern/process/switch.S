@@ -1,5 +1,7 @@
 #include <riscv.h>
-
+#函数第一个参数在寄存器 a0，第二个参数在 a1。
+#所以 a0 指向 from（要保存的上下文结构），
+#a1 指向 to（要恢复的上下文结构）。
 .text
 # void switch_to(struct proc_struct* from, struct proc_struct* to)
 .globl switch_to

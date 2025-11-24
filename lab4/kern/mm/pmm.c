@@ -221,11 +221,17 @@ void pmm_init(void)
 //  la:     the linear address need to map
 //  create: a logical value to decide if alloc a page for PT
 // return vaule: the kernel virtual address of this pte
+/*
+在传入的页表 pgdir 中查找虚拟地址 la 对应的叶子 PTE 的内核虚地址指针
+当 create 为 true 时，缺失的中间页表页会按需分配并初始化
+*/
 pte_t *get_pte(pde_t *pgdir, uintptr_t la, bool create)
 {
+    //找到对应的Giga Page大大页
     pde_t *pdep1 = &pgdir[PDX1(la)];
     if (!(*pdep1 & PTE_V))
     {
+        //如果下一级页表不存在，那就给它分配一页，创造新页表
         struct Page *page;
         if (!create || (page = alloc_page()) == NULL)
         {
@@ -233,10 +239,14 @@ pte_t *get_pte(pde_t *pgdir, uintptr_t la, bool create)
         }
         set_page_ref(page, 1);
         uintptr_t pa = page2pa(page);
+        //我们现在在虚拟地址空间中，所以要转化为KADDR再memset.
         memset(KADDR(pa), 0, PGSIZE);
-        *pdep1 = pte_create(page2ppn(page), PTE_U | PTE_V);
+        //不管页表怎么构造，我们确保物理地址和虚拟地址的偏移量始终相同，
+        //那么就可以用这种方式完成对物理内存的访问。
+        *pdep1 = pte_create(page2ppn(page), PTE_U | PTE_V);//注意这里R,W,X全零
     }
-    pde_t *pdep0 = &((pte_t *)KADDR(PDE_ADDR(*pdep1)))[PDX0(la)];
+    pde_t *pdep0 = &((pte_t *)KADDR(PDE_ADDR(*pdep1)))[PDX0(la)];//再下一级页表
+    //这里的逻辑和前面完全一致，页表不存在就现在分配一个
     if (!(*pdep0 & PTE_V))
     {
         struct Page *page;
@@ -249,6 +259,7 @@ pte_t *get_pte(pde_t *pgdir, uintptr_t la, bool create)
         memset(KADDR(pa), 0, PGSIZE);
         *pdep0 = pte_create(page2ppn(page), PTE_U | PTE_V);
     }
+    //找到输入的虚拟地址la对应的页表项的地址(可能是刚刚分配的)
     return &((pte_t *)KADDR(PDE_ADDR(*pdep0)))[PTX(la)];
 }
 
@@ -270,6 +281,7 @@ struct Page *get_page(pde_t *pgdir, uintptr_t la, pte_t **ptep_store)
 // page_remove_pte - free an Page sturct which is related linear address la
 //                - and clean(invalidate) pte which is related linear address la
 // note: PT is changed, so the TLB need to be invalidate
+//删除一个页表项以及它的映射
 static inline void page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep)
 {
     if (*ptep & PTE_V)
@@ -291,7 +303,9 @@ static inline void page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep)
 // validated pte
 void page_remove(pde_t *pgdir, uintptr_t la)
 {
+    //找到页表项所在位置
     pte_t *ptep = get_pte(pgdir, la, 0);
+    //删除这个页表项的映射
     if (ptep != NULL)
     {
         page_remove_pte(pgdir, la, ptep);
@@ -306,27 +320,37 @@ void page_remove(pde_t *pgdir, uintptr_t la)
 //  perm:  the permission of this Page which is setted in related pte
 // return value: always 0
 // note: PT is changed, so the TLB need to be invalidate
+/*
+在页表 pgdir 中把物理页 struct Page *page 映射到线性地址 la，权限由 perm 指定
+*/
 int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm)
 {
+    //pgdir是页表基址(satp)，page对应物理页面，la是虚拟地址
     pte_t *ptep = get_pte(pgdir, la, 1);
+    //先找到对应页表项的位置，如果原先不存在，get_pte()会分配页表项的内存
     if (ptep == NULL)
     {
         return -E_NO_MEM;
     }
-    page_ref_inc(page);
+    page_ref_inc(page);//指向这个物理页面的虚拟地址增加了一个
     if (*ptep & PTE_V)
     {
+        //原先存在映射
         struct Page *p = pte2page(*ptep);
+        //如果这个映射原先就有
         if (p == page)
         {
             page_ref_dec(page);
         }
+        //如果原先这个虚拟地址映射到其他物理页面，那么需要删除映射
         else
         {
             page_remove_pte(pgdir, la, ptep);
         }
     }
+    //构造页表项
     *ptep = pte_create(page2ppn(page), PTE_V | perm);
+    //页表改变之后要刷新TLB
     tlb_invalidate(pgdir, la);
     return 0;
 }

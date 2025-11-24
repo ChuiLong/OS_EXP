@@ -4,6 +4,7 @@
         "*.embeddedhtml": "html",
         "stdarg.h": "c",
         "type_traits": "c",
-        "kdebug.h": "c"
+        "kdebug.h": "c",
+        "picirq.h": "c"
     }
 }

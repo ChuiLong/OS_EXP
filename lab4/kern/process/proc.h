@@ -43,18 +43,18 @@ struct proc_struct
 {
     enum proc_state state;        // Process state
     int pid;                      // Process ID
-    int runs;                     // the running times of Proces
-    uintptr_t kstack;             // Process kernel stack
-    volatile bool need_resched;   // bool value: need to be rescheduled to release CPU?
+    int runs;                     // 统计该进程被调度运行的次数
+    uintptr_t kstack;             // 该进程的内核栈基址
+    volatile bool need_resched;   // bool value: 进程是否需要被抢占/重新调度。调度器检查此标志决定是否切换
     struct proc_struct *parent;   // the parent process
-    struct mm_struct *mm;         // Process's memory management field
-    struct context context;       // Switch here to run process
-    struct trapframe *tf;         // Trap frame for current interrupt
-    uintptr_t pgdir;              // the base addr of Page Directroy Table(PDT)
-    uint32_t flags;               // Process flag
+    struct mm_struct *mm;         // 指向进程的内存管理结构 struct mm_struct
+    struct context context;       // 保存进行上下文切换时需要恢复的寄存器
+    struct trapframe *tf;         // 指向当前进程的 trapframe 
+    uintptr_t pgdir;              // 进程页面目录/页表基址
+    uint32_t flags;               // 进程标志位集合
     char name[PROC_NAME_LEN + 1]; // Process name
-    list_entry_t list_link;       // Process link list
-    list_entry_t hash_link;       // Process hash list
+    list_entry_t list_link;       // Process link list，链表节点，用于把 proc 插入全局进程链表 proc_list
+    list_entry_t hash_link;       // Process hash list，链表节点，用于按 pid 哈希表（hash_list[]）链接，便于按 pid 查找
 };
 
 #define le2proc(le, member) \

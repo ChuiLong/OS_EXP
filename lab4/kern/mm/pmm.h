@@ -85,12 +85,17 @@ extern struct Page *pages;
 extern size_t npage;
 extern uint_t va_pa_offset;
 
+// 返回该 struct Page 对应的物理页号（ppn）
 static inline ppn_t
 page2ppn(struct Page *page)
 {
+    // 通过指针差算出 page 在 pages[] 数组中的索引：page - pages
+    // 再加上 nbase，得到 page 对应的物理页号
+    // nbase 表示 pages 数组所对应的第一个 page 的物理页号偏移。
     return page - pages + nbase;
 }
 
+// 返回该物理页的物理地址（pa）
 static inline uintptr_t
 page2pa(struct Page *page)
 {
@@ -107,6 +112,7 @@ pa2page(uintptr_t pa)
     return &pages[PPN(pa) - nbase];
 }
 
+// 把该 struct Page* 对应的物理页框转换为内核虚拟地址（kernel virtual address）
 static inline void *
 page2kva(struct Page *page)
 {

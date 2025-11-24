@@ -241,9 +241,14 @@
 
 #define barrier() __asm__ __volatile__("fence" ::: "memory")
 
+// 把给定的页表基址加载到 satp 寄存器，从而切换当前的进程地址空间（页表）
 static inline void
 lsatp(unsigned int pgdir)
 {
+  /*
+  将传入的 pgdir（页目录基地址，通常是物理地址）右移页大小位（RISCV_PGSHIFT，通常为 12），
+  得到 PPN（物理页号）
+  */
   write_csr(satp, SATP32_MODE | (pgdir >> RISCV_PGSHIFT));
 }
 

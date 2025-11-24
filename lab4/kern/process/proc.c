@@ -82,6 +82,7 @@ void forkrets(struct trapframe *tf);
 void switch_to(struct context *from, struct context *to);
 
 // alloc_proc - alloc a proc_struct and init all fields of proc_struct
+// 分配并初始化一个新的 proc_struct(进程结构)
 static struct proc_struct *
 alloc_proc(void)
 {
@@ -195,6 +196,15 @@ void proc_run(struct proc_struct *proc)
          *   lsatp():                   Modify the value of satp register
          *   switch_to():              Context switching between two processes
          */
+        bool intr_flag;
+        struct proc_struct *prev = current, *next = proc;
+        local_intr_save(intr_flag);                    // 禁用中断
+        {
+            current = proc;                            // 切换当前进程为要运行的进程
+            lsatp(next->pgdir);                        // 切换页表，以便使用新进程的地址空间
+            switch_to(&(prev->context), &(next->context)); // 实现上下文切换
+        }
+        local_intr_restore(intr_flag);                 // 允许中断
 
     }
 }
@@ -240,15 +250,25 @@ find_proc(int pid)
 int kernel_thread(int (*fn)(void *), void *arg, uint32_t clone_flags)
 {
     struct trapframe tf;
+    // 先清零
     memset(&tf, 0, sizeof(struct trapframe));
+    // 把要执行的函数指针与参数放入寄存器槽
     tf.gpr.s0 = (uintptr_t)fn;
     tf.gpr.s1 = (uintptr_t)arg;
+    // 设置 sstatus 与特权返回相关位
+    /*
+    让新线程在内核模式（SPP=1）返回，
+    并使中断在返回后为可中断状态（SPIE），
+    且在创建时禁用 SIE 位
+    */
     tf.status = (read_csr(sstatus) | SSTATUS_SPP | SSTATUS_SPIE) & ~SSTATUS_SIE;
+    // 子进程首次恢复后会从这个地址开始执行
     tf.epc = (uintptr_t)kernel_thread_entry;
     return do_fork(clone_flags | CLONE_VM, 0, &tf);
 }
 
 // setup_kstack - alloc pages with size KSTACKPAGE as process kernel stack
+// 为新进程分配内核栈页
 static int
 setup_kstack(struct proc_struct *proc)
 {
@@ -280,6 +300,12 @@ copy_mm(uint32_t clone_flags, struct proc_struct *proc)
 
 // copy_thread - setup the trapframe on the  process's kernel stack top and
 //             - setup the kernel entry point and stack of process
+/*
+为新创建的进程（或线程）在其内核栈上设置好完整的初始执行上下文：
+把要恢复的 trapframe 放到内核栈顶，
+并初始化用于轻量切换的 context，
+使得新进程被调度时能够正确“从 fork/创建点”继续执行
+*/
 static void
 copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf)
 {
@@ -299,6 +325,12 @@ copy_thread(struct proc_struct *proc, uintptr_t esp, struct trapframe *tf)
  * @stack:       the parent's user stack pointer. if stack==0, It means to fork a kernel thread.
  * @tf:          the trapframe info, which will be copied to child process's proc->tf
  */
+/*
+在当前进程上下文创建一个子进程（或内核线程），
+分配 proc 结构与内核栈，复制/共享 mm，
+设置子进程的 trapframe/context，并把子进程置为 RUNNABLE。
+失败返回负错误码，成功返回子 pid
+*/
 int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
 {
     int ret = -E_NO_FREE_PROC;
@@ -325,14 +357,47 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
      *   proc_list:    the process set's list
      *   nr_process:   the number of process set
      */
-
     //    1. call alloc_proc to allocate a proc_struct
+    if ((proc = alloc_proc()) == NULL) {
+        goto fork_out;
+    }
+    // 关联父进程
+    proc->parent = current;
+    
     //    2. call setup_kstack to allocate a kernel stack for child process
+    // 为子进程分配内核栈
+    if (setup_kstack(proc) != 0) {
+        goto bad_fork_cleanup_proc;
+    }
+    
     //    3. call copy_mm to dup OR share mm according clone_flag
+    // 按 clone_flags 决定复制或共享地址空间
+    if (copy_mm(clone_flags, proc) != 0) {
+        goto bad_fork_cleanup_kstack;
+    }
+    
     //    4. call copy_thread to setup tf & context in proc_struct
+    // 设置 trapframe 与上下文
+    copy_thread(proc, stack, tf);
+    
     //    5. insert proc_struct into hash_list && proc_list
+    bool intr_flag;
+    // 将 proc 插入链表 proc_list 和哈希表 hash_list
+    local_intr_save(intr_flag);
+    {
+        proc->pid = get_pid();
+        hash_proc(proc);
+        list_add(&proc_list, &(proc->list_link));
+        nr_process++;
+    }
+    local_intr_restore(intr_flag);
+    
     //    6. call wakeup_proc to make the new child process RUNNABLE
+    // 将 proc->state 置为 PROC_RUNNABLE
+    wakeup_proc(proc);
+    
     //    7. set ret vaule using child proc's pid
+    ret = proc->pid;
     
 fork_out:
     return ret;
@@ -369,18 +434,21 @@ void proc_init(void)
 {
     int i;
 
+    // 初始化进程链表 proc_list
     list_init(&proc_list);
+    // 初始化 pid 哈希表 hash_list[]
     for (i = 0; i < HASH_LIST_SIZE; i++)
     {
         list_init(hash_list + i);
     }
 
+    // 创建 idle 进程
     if ((idleproc = alloc_proc()) == NULL)
     {
         panic("cannot alloc idleproc.\n");
     }
 
-    // check the proc structure
+    // 验证 alloc_proc 返回值
     int *context_mem = (int *)kmalloc(sizeof(struct context));
     memset(context_mem, 0, sizeof(struct context));
     int context_init_flag = memcmp(&(idleproc->context), context_mem, sizeof(struct context));
@@ -389,11 +457,13 @@ void proc_init(void)
     memset(proc_name_mem, 0, PROC_NAME_LEN);
     int proc_name_flag = memcmp(&(idleproc->name), proc_name_mem, PROC_NAME_LEN);
 
+    // 申请临时零内存并 memcmp 检查 idleproc 的若干字段是否为期望的默认值
     if (idleproc->pgdir == boot_pgdir_pa && idleproc->tf == NULL && !context_init_flag && idleproc->state == PROC_UNINIT && idleproc->pid == -1 && idleproc->runs == 0 && idleproc->kstack == 0 && idleproc->need_resched == 0 && idleproc->parent == NULL && idleproc->mm == NULL && idleproc->flags == 0 && !proc_name_flag)
     {
         cprintf("alloc_proc() correct!\n");
     }
 
+    // 设置 idleproc 的基本运行信息
     idleproc->pid = 0;
     idleproc->state = PROC_RUNNABLE;
     idleproc->kstack = (uintptr_t)bootstack;
@@ -401,14 +471,20 @@ void proc_init(void)
     set_proc_name(idleproc, "idle");
     nr_process++;
 
+    // 设置当前进程为 idleproc
     current = idleproc;
 
+    /*
+    创建一个内核线程，入口函数为 init_main，参数为字符串"Hello world!!"。
+    kernel_thread 会构造临时 trapframe 并调用 do_fork 创建新进程/线程。
+    */
     int pid = kernel_thread(init_main, "Hello world!!", 0);
     if (pid <= 0)
     {
         panic("create init_main failed.\n");
     }
 
+    // 从 pid 哈希表中查找刚创建的进程结构指针并保存为 initproc
     initproc = find_proc(pid);
     set_proc_name(initproc, "init");
 

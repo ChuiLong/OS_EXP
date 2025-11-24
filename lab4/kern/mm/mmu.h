@@ -5,6 +5,9 @@
 #include <defs.h>
 #endif /* !__ASSEMBLER__ */
 
+
+/* 上述代码定义了一些与内存管理单元（Memory Management Unit, MMU）相关的宏和常量，
+用于操作线性地址和物理地址，以及页表项的字段。 */
 // A linear address 'la' has a three-part structure as follows:
 //
 // +--------10------+-------10-------+---------12----------+
