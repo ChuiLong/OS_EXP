@@ -3,7 +3,7 @@
 # proc_struct 中的 context 与 tf 说明
 
 简要概述
-- proc_struct::context 保存用于轻量级上下文切换（switch_to）所需的寄存器（callee‑saved）。
+- proc_struct::context 保存用于轻量级上下文切换（switch_to）所需的寄存器（callee‑saved）。（编译器会自动帮助我们生成保存和恢复调用者保存寄存器的代码）
 - proc_struct::tf 指向放在内核栈顶的完整 trapframe，用于异常/中断恢复以及进程首次被调度时恢复所有寄存器状态。
 
 1) struct context 的含义与作用
