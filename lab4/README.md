@@ -143,12 +143,77 @@ void proc_run(struct proc_struct *proc)
 
 运行`make qemu`,得到输出如下。
 ```
+(base) linux@Lenovo:~/OS_EXP/lab4$ make qemu
 
+OpenSBI v0.4 (Jul  2 2019 11:53:53)
+   ____                    _____ ____ _____
+  / __ \                  / ____|  _ \_   _|
+ | |  | |_ __   ___ _ __ | (___ | |_) || |
+ | |  | | '_ \ / _ \ '_ \ \___ \|  _ < | |
+ | |__| | |_) |  __/ | | |____) | |_) || |_
+  \____/| .__/ \___|_| |_|_____/|____/_____|
+        | |
+        |_|
+
+Platform Name          : QEMU Virt Machine
+Platform HART Features : RV64ACDFIMSU
+Platform Max HARTs     : 8
+Current Hart           : 0
+Firmware Base          : 0x80000000
+Firmware Size          : 112 KB
+Runtime SBI Version    : 0.1
+
+PMP0: 0x0000000080000000-0x000000008001ffff (A)
+PMP1: 0x0000000000000000-0xffffffffffffffff (A,R,W,X)
+DTB Init
+HartID: 0
+DTB Address: 0x82200000
+Physical Memory from DTB:
+  Base: 0x0000000080000000
+  Size: 0x0000000008000000 (128 MB)
+  End:  0x0000000087ffffff
+DTB init completed
+(THU.CST) os is loading ...
+
+Special kernel symbols:
+  entry  0xc020004a (virtual)
+  etext  0xc0203e08 (virtual)
+  edata  0xc0209030 (virtual)
+  end    0xc020d4ec (virtual)
+Kernel executable memory footprint: 54KB
+memory management: best_fit_pmm_manager
+physcial memory map:
+  memory: 0x08000000, [0x80000000, 0x87ffffff].
+vapaofset is 18446744070488326144
+check_alloc_page() succeeded!
+check_pgdir() succeeded!
+check_boot_pgdir() succeeded!
+use SLOB allocator
+kmalloc_init() succeeded!
+check_vma_struct() succeeded!
+check_vmm() succeeded.
+alloc_proc() correct!
+++ setup timer interrupts
+this initproc, pid = 1, name = "init"
+To U: "Hello world!!".
+To U: "en.., Bye, Bye. :)"
+kernel panic at kern/process/proc.c:389:
+    process exit!!.
+
+Welcome to the kernel debug monitor!!
 ```
+
+**结果分析**：
+1. `this initproc, pid = 1, name = "init"`：说明 `init` 进程（PID=1）已成功创建并开始调度。
+2. `To U: "Hello world!!"`：这是 `init` 进程在用户态执行时打印的字符串，证明内核成功切换到了用户态，并且用户程序开始执行。
+3. `To U: "en.., Bye, Bye. :)"`：这是用户程序执行完毕前的输出，表明用户程序正常运行结束。
+4. `kernel panic at kern/process/proc.c:389: process exit!!`：`init` 进程退出后，由于它是系统中唯一的进程，内核检测到没有其他进程可运行，触发了 panic，这符合实验预期（本实验尚未实现完整的进程回收和 shell）。
 
 运行`make grade`,得到输出如下。
 ```
-
+  -check alloc proc:                         OK
+  -check initproc:                           OK
+Total Score: 30/30
 ```
 可以发现输出符合预期，证明我们的实验结果是正确的！
 
