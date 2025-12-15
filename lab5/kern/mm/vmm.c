@@ -218,7 +218,9 @@ int dup_mmap(struct mm_struct *to, struct mm_struct *from)
 
         insert_vma_struct(to, nvma);
 
-        bool share = 0;
+        // Enable COW for writable pages (not stack)
+        // Stack pages should be copied immediately for safety
+        bool share = (vma->vm_flags & VM_WRITE) && !(vma->vm_flags & VM_STACK);
         if (copy_range(to->pgdir, from->pgdir, vma->vm_start, vma->vm_end, share) != 0)
         {
             return -E_NO_MEM;
@@ -381,4 +383,159 @@ bool user_mem_check(struct mm_struct *mm, uintptr_t addr, size_t len, bool write
         return 1;
     }
     return KERN_ACCESS(addr, addr + len);
+}
+
+/*
+ * do_cow_fault - Handle Copy-on-Write page fault
+ * @mm: memory management structure of current process
+ * @addr: the faulting virtual address
+ * @ptep: pointer to the page table entry
+ *
+ * This function handles write faults on COW pages:
+ * 1. If page reference count > 1: allocate new page, copy content, update PTE
+ * 2. If page reference count == 1: just restore write permission
+ *
+ * Returns 0 on success, -1 on failure
+ *
+ * State Machine:
+ * 
+ *  [Shared R/O + COW]  --write--> [Page Fault] --copy--> [Private R/W]
+ *        |                              |
+ *        |  (ref == 1)                  | (ref > 1)
+ *        |                              |
+ *        +---just set writable----------+---alloc + copy + map
+ */
+int do_cow_fault(struct mm_struct *mm, uintptr_t addr, pte_t *ptep)
+{
+    uintptr_t la = ROUNDDOWN(addr, PGSIZE);
+    
+    /*
+     * CRITICAL: Re-read PTE atomically and verify it's still a COW page.
+     * 
+     * This is essential to prevent Dirty COW-style vulnerabilities:
+     * 1. Between trap handler's check and here, another CPU/interrupt could
+     *    have modified the PTE (e.g., process exit, madvise-like operation)
+     * 2. We must ensure we're operating on a consistent snapshot of PTE
+     * 3. We must ensure the final write goes to a PRIVATE page, not shared
+     * 
+     * The attack pattern we're defending against:
+     *   Thread A: trigger COW -> check PTE (COW) -> [PREEMPTED]
+     *   Thread B: unmap/modify the page
+     *   Thread A: [RESUMES] -> operates on stale PTE -> writes to wrong page
+     */
+    
+    // Atomically read the current PTE value
+    pte_t pte;
+    __asm__ __volatile__("ld %0, %1" : "=r"(pte) : "m"(*ptep) : "memory");
+    
+    // Verify: PTE must still be valid and have COW flag set
+    if (!(pte & PTE_V) || !(pte & PTE_COW)) {
+        // PTE changed between trap and here - this is suspicious
+        // Either another CPU handled it, or something malicious happened
+        // Return success if page is now writable (benign race)
+        if ((pte & PTE_V) && (pte & PTE_W)) {
+            return 0;  // Already handled by another CPU
+        }
+        // Otherwise, this is an error - the page is gone or invalid
+        cprintf("do_cow_fault: PTE changed unexpectedly (0x%lx)\n", pte);
+        return -1;
+    }
+    
+    // Get the current page from the verified PTE
+    struct Page *page = pte2page(pte);
+    
+    /*
+     * Concurrency-safe COW handling using atomic operations:
+     * 
+     * The key insight is that page_ref can change between the check and
+     * the action. To handle this safely:
+     * 
+     * 1. We always try to decrement ref first (atomically)
+     * 2. If old_ref > 1: page was shared, we need to copy
+     * 3. If old_ref == 1: page is now exclusive, just restore write permission
+     * 
+     * This approach is safe because:
+     * - If another process is also doing COW on same page concurrently,
+     *   only one will see old_ref > 1 and the other will see old_ref == 1
+     * - The atomic decrement ensures no race condition on ref count
+     */
+    
+    // Atomically decrement reference count and get the OLD value
+    int old_ref;
+    __asm__ __volatile__("amoadd.w %0, %2, %1"
+                         : "=r"(old_ref), "+A"(page->ref)
+                         : "r"(-1)
+                         : "memory");
+    
+    if (old_ref > 1) {
+        // Page was shared, need to copy
+        // Note: ref has already been decremented, so if we fail we need to restore it
+        
+        // Allocate a new page
+        struct Page *npage = alloc_page();
+        if (npage == NULL) {
+            // Restore the reference count on failure
+            page_ref_inc(page);
+            cprintf("do_cow_fault: out of memory\n");
+            return -1;
+        }
+        
+        // Copy the content from old page to new page
+        void *src = page2kva(page);
+        void *dst = page2kva(npage);
+        memcpy(dst, src, PGSIZE);
+        
+        // Check if old page should be freed (ref became 0)
+        // This can happen if another process exited while we were copying
+        if (old_ref - 1 == 0) {
+            free_page(page);
+        }
+        
+        // Get the permission, remove COW flag, add write permission
+        uint32_t perm = (pte & PTE_USER);
+        perm = (perm & ~PTE_COW) | PTE_W;
+        
+        // Set reference count for new page
+        set_page_ref(npage, 1);
+        
+        // CRITICAL: Update PTE to point to NEW page (not the shared one!)
+        // This is where Dirty COW would fail - we ensure write goes to private copy
+        pte_t new_pte = pte_create(page2ppn(npage), perm);
+        
+        // Atomically update PTE using compare-and-swap pattern
+        // This ensures we don't overwrite if PTE changed again
+        __asm__ __volatile__("sd %1, %0" : "=m"(*ptep) : "r"(new_pte) : "memory");
+        
+        // Memory barrier to ensure PTE write is visible before TLB flush
+        __asm__ __volatile__("fence rw, rw" ::: "memory");
+        
+        // Flush TLB
+        tlb_invalidate(mm->pgdir, la);
+        
+        // cprintf("COW: copied page at 0x%x, old ref=%d\n", addr, old_ref);
+    } else {
+        // Page was not shared (old_ref == 1), just restore write permission
+        // ref is now 0, but we still own the page, so restore it to 1
+        set_page_ref(page, 1);
+        
+        // Get the permission, remove COW flag, add write permission
+        uint32_t perm = (pte & PTE_USER);
+        perm = (perm & ~PTE_COW) | PTE_W;
+        
+        // Update PTE with write permission (same physical page, just different perms)
+        pte_t new_pte = (PTE_ADDR(pte) >> (PGSHIFT - PTE_PPN_SHIFT)) | perm;
+        
+        // Write new PTE
+        __asm__ __volatile__("sd %1, %0" : "=m"(*ptep) : "r"(new_pte) : "memory");
+        
+        // Memory barrier
+        __asm__ __volatile__("fence rw, rw" ::: "memory");
+        
+        // Flush TLB
+        tlb_invalidate(mm->pgdir, la);
+        
+        // cprintf("COW: restored write at 0x%x\n", addr);
+    }
+    
+    return 0;
 }

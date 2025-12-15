@@ -63,6 +63,10 @@ bool user_mem_check(struct mm_struct *mm, uintptr_t start, size_t len, bool writ
 bool copy_from_user(struct mm_struct *mm, void *dst, const void *src, size_t len, bool writable);
 bool copy_to_user(struct mm_struct *mm, void *dst, const void *src, size_t len);
 
+// COW (Copy-on-Write) page fault handler
+// Returns 0 on success, -1 on failure
+int do_cow_fault(struct mm_struct *mm, uintptr_t addr, pte_t *ptep);
+
 static inline int
 mm_count(struct mm_struct *mm)
 {

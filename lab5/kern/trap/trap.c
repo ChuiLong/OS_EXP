@@ -8,6 +8,7 @@
 #include <assert.h>
 #include <console.h>
 #include <vmm.h>
+#include <pmm.h>
 #include <kdebug.h>
 #include <unistd.h>
 #include <syscall.h>
@@ -211,12 +212,44 @@ void exception_handler(struct trapframe *tf)
         break;
     case CAUSE_FETCH_PAGE_FAULT:
         cprintf("Instruction page fault\n");
+        if (current->mm != NULL) {
+            // 用户进程页面错误，打印信息并终止进程
+            print_trapframe(tf);
+            do_exit(-E_KILLED);
+        }
         break;
     case CAUSE_LOAD_PAGE_FAULT:
         cprintf("Load page fault\n");
+        if (current->mm != NULL) {
+            // 用户进程页面错误，打印信息并终止进程
+            print_trapframe(tf);
+            do_exit(-E_KILLED);
+        }
         break;
     case CAUSE_STORE_PAGE_FAULT:
-        cprintf("Store/AMO page fault\n");
+        // cprintf("Store/AMO page fault\n");
+        if (current->mm != NULL) {
+            // 获取发生页面错误的地址
+            uintptr_t addr = tf->tval;
+            // 查找对应的页表项
+            pte_t *ptep = get_pte(current->mm->pgdir, addr, 0);
+            
+            // 检查是否是COW页面
+            if (ptep != NULL && (*ptep & PTE_V) && (*ptep & PTE_COW)) {
+                // 这是一个COW页面，尝试处理
+                if (do_cow_fault(current->mm, addr, ptep) == 0) {
+                    // COW处理成功
+                    break;
+                }
+                // COW处理失败，继续下面的错误处理
+                cprintf("COW fault handling failed\n");
+            }
+            
+            // 不是COW页面或COW处理失败，打印信息并终止进程
+            cprintf("Store/AMO page fault at 0x%08x\n", addr);
+            print_trapframe(tf);
+            do_exit(-E_KILLED);
+        }
         break;
     default:
         print_trapframe(tf);

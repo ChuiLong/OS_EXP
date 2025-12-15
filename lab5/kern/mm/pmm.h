@@ -138,27 +138,41 @@ pde2page(pde_t pde)
 static inline int
 page_ref(struct Page *page)
 {
-    return page->ref;
+    // Use atomic load to ensure visibility in concurrent scenarios
+    int ref;
+    __asm__ __volatile__("lw %0, %1" : "=r"(ref) : "m"(page->ref) : "memory");
+    return ref;
 }
 
 static inline void
 set_page_ref(struct Page *page, int val)
 {
-    page->ref = val;
+    // Use atomic store to ensure visibility in concurrent scenarios
+    __asm__ __volatile__("sw %1, %0" : "=m"(page->ref) : "r"(val) : "memory");
 }
 
 static inline int
 page_ref_inc(struct Page *page)
 {
-    page->ref += 1;
-    return page->ref;
+    // Use atomic add for thread-safe increment
+    int ret;
+    __asm__ __volatile__("amoadd.w %0, %2, %1"
+                         : "=r"(ret), "+A"(page->ref)
+                         : "r"(1)
+                         : "memory");
+    return ret + 1;  // Return the new value after increment
 }
 
 static inline int
 page_ref_dec(struct Page *page)
 {
-    page->ref -= 1;
-    return page->ref;
+    // Use atomic add for thread-safe decrement
+    int ret;
+    __asm__ __volatile__("amoadd.w %0, %2, %1"
+                         : "=r"(ret), "+A"(page->ref)
+                         : "r"(-1)
+                         : "memory");
+    return ret - 1;  // Return the new value after decrement
 }
 
 static inline void flush_tlb()
