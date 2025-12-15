@@ -1,5 +1,4 @@
 #include <default_pmm.h>
-#include <best_fit_pmm.h>
 #include <defs.h>
 #include <error.h>
 #include <kmalloc.h>
@@ -38,7 +37,7 @@ static void check_boot_pgdir(void);
 // init_pmm_manager - initialize a pmm_manager instance
 static void init_pmm_manager(void)
 {
-    pmm_manager = &best_fit_pmm_manager;
+    pmm_manager = &default_pmm_manager;
     cprintf("memory management: %s\n", pmm_manager->name);
     pmm_manager->init();
 }
@@ -423,6 +422,14 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
              * (3) memory copy from src_kvaddr to dst_kvaddr, size is PGSIZE
              * (4) build the map of phy addr of  nage with the linear addr start
              */
+            // (1) 获取源页面的内核虚拟地址
+            void *src_kvaddr = page2kva(page);
+            // (2) 获取目标页面的内核虚拟地址
+            void *dst_kvaddr = page2kva(npage);
+            // (3) 复制页面内容，大小为 PGSIZE
+            memcpy(dst_kvaddr, src_kvaddr, PGSIZE);
+            // (4) 建立子进程的页面映射关系
+            ret = page_insert(to, npage, start, perm);
 
             assert(ret == 0);
         }
