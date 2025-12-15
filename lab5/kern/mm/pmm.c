@@ -368,8 +368,7 @@ void exit_range(pde_t *pgdir, uintptr_t start, uintptr_t end)
  * process B
  * @to:    the addr of process B's Page Directory
  * @from:  the addr of process A's Page Directory
- * @share: flags to indicate to dup OR share. We just use dup method, so it
- * didn't be used.
+ * @share: flags to indicate to dup OR share. If share is true, use COW mechanism.
  *
  * CALL GRAPH: copy_mm-->dup_mmap-->copy_range
  */
@@ -399,37 +398,93 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
             uint32_t perm = (*ptep & PTE_USER);
             // get page from ptep
             struct Page *page = pte2page(*ptep);
-            // alloc a page for process B
-            struct Page *npage = alloc_page();
-            assert(page != NULL);
-            assert(npage != NULL);
             int ret = 0;
-            /* LAB5:EXERCISE2 YOUR CODE
-             * replicate content of page to npage, build the map of phy addr of
-             * nage with the linear addr start
-             *
-             * Some Useful MACROs and DEFINEs, you can use them in below
-             * implementation.
-             * MACROs or Functions:
-             *    page2kva(struct Page *page): return the kernel vritual addr of
-             * memory which page managed (SEE pmm.h)
-             *    page_insert: build the map of phy addr of an Page with the
-             * linear addr la
-             *    memcpy: typical memory copy function
-             *
-             * (1) find src_kvaddr: the kernel virtual address of page
-             * (2) find dst_kvaddr: the kernel virtual address of npage
-             * (3) memory copy from src_kvaddr to dst_kvaddr, size is PGSIZE
-             * (4) build the map of phy addr of  nage with the linear addr start
+            
+            /* COW (Copy-on-Write) Implementation:
+             * If share is true, we use COW mechanism:
+             * 1. Don't allocate new page, share the same physical page
+             * 2. Set both parent and child's PTE to read-only with COW flag
+             * 3. When either process tries to write, page fault will occur
+             * 4. In page fault handler, allocate new page and copy content
              */
-            // (1) 获取源页面的内核虚拟地址
-            void *src_kvaddr = page2kva(page);
-            // (2) 获取目标页面的内核虚拟地址
-            void *dst_kvaddr = page2kva(npage);
-            // (3) 复制页面内容，大小为 PGSIZE
-            memcpy(dst_kvaddr, src_kvaddr, PGSIZE);
-            // (4) 建立子进程的页面映射关系
-            ret = page_insert(to, npage, start, perm);
+            if (share) {
+                // COW: Share the physical page between parent and child
+                // Remove write permission and add COW flag for both
+                
+                /*
+                 * Concurrency-safe COW setup:
+                 * 
+                 * The order of operations is critical for correctness:
+                 * 1. First increment ref count (atomic) - ensures page won't be freed
+                 * 2. Then modify parent's PTE to read-only + COW
+                 * 3. Flush parent's TLB
+                 * 4. Finally map child's PTE
+                 * 
+                 * Memory barrier ensures visibility across all CPUs.
+                 */
+                
+                // Step 1: Atomically increment reference count BEFORE any PTE changes
+                // This ensures the page won't be freed even if parent/child exit
+                page_ref_inc(page);
+                
+                // Memory barrier to ensure ref increment is visible before PTE changes
+                __asm__ __volatile__("fence rw, rw" ::: "memory");
+                
+                // Step 2: Modify parent's PTE: remove write, add COW flag
+                perm = (*ptep & ~PTE_W) | PTE_COW;
+                *ptep = (PTE_ADDR(*ptep) >> (PGSHIFT - PTE_PPN_SHIFT)) | perm;
+                
+                // Step 3: CRITICAL: Flush TLB for parent's address space
+                // Without this, parent may still write using cached RW permission!
+                tlb_invalidate(from, start);
+                
+                // Step 4: Map child to the same physical page with COW
+                // Note: We've already incremented ref, so we directly set PTE
+                // instead of using page_insert (which would increment ref again)
+                if ((nptep = get_pte(to, start, 1)) == NULL) {
+                    // Rollback: decrement ref and restore parent's write permission
+                    page_ref_dec(page);
+                    perm = (*ptep & ~PTE_COW) | PTE_W;
+                    *ptep = (PTE_ADDR(*ptep) >> (PGSHIFT - PTE_PPN_SHIFT)) | perm;
+                    tlb_invalidate(from, start);
+                    return -E_NO_MEM;
+                }
+                *nptep = pte_create(page2ppn(page), perm);
+                
+                ret = 0;
+            } else {
+                // Original behavior: allocate new page and copy content
+                struct Page *npage = alloc_page();
+                assert(page != NULL);
+                assert(npage != NULL);
+                
+                /* LAB5:EXERCISE2 YOUR CODE
+                 * replicate content of page to npage, build the map of phy addr of
+                 * nage with the linear addr start
+                 *
+                 * Some Useful MACROs and DEFINEs, you can use them in below
+                 * implementation.
+                 * MACROs or Functions:
+                 *    page2kva(struct Page *page): return the kernel vritual addr of
+                 * memory which page managed (SEE pmm.h)
+                 *    page_insert: build the map of phy addr of an Page with the
+                 * linear addr la
+                 *    memcpy: typical memory copy function
+                 *
+                 * (1) find src_kvaddr: the kernel virtual address of page
+                 * (2) find dst_kvaddr: the kernel virtual address of npage
+                 * (3) memory copy from src_kvaddr to dst_kvaddr, size is PGSIZE
+                 * (4) build the map of phy addr of  nage with the linear addr start
+                 */
+                // (1) 获取源页面的内核虚拟地址
+                void *src_kvaddr = page2kva(page);
+                // (2) 获取目标页面的内核虚拟地址
+                void *dst_kvaddr = page2kva(npage);
+                // (3) 复制页面内容，大小为 PGSIZE
+                memcpy(dst_kvaddr, src_kvaddr, PGSIZE);
+                // (4) 建立子进程的页面映射关系
+                ret = page_insert(to, npage, start, perm);
+            }
 
             assert(ret == 0);
         }
