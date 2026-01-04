@@ -21,16 +21,12 @@ struct sched_class
     // Init the run queue
     void (*init)(struct run_queue *rq);
     // put the proc into runqueue, and this function must be called with rq_lock
-    // 需要入队的进程放在调度队列的尾端
     void (*enqueue)(struct run_queue *rq, struct proc_struct *proc);
     // get the proc out runqueue, and this function must be called with rq_lock
-    // 将相应的项从队列中删除即可
     void (*dequeue)(struct run_queue *rq, struct proc_struct *proc);
     // choose the next runnable task
-    // 选取队列头的表项，用le2proc函数获得对应的进程控制块
     struct proc_struct *(*pick_next)(struct run_queue *rq);
     // dealer of the time-tick
-    // 函数在每一次时钟中断调用。在这里，我们需要对当前正在运行的进程的剩余时间片减一
     void (*proc_tick)(struct run_queue *rq, struct proc_struct *proc);
     /* for SMP support in the future
      *  load_balance
@@ -43,15 +39,15 @@ struct sched_class
 
 struct run_queue
 {
-    list_entry_t run_list; // 进程队列，存放所有可运行的进程
-    unsigned int proc_num; // 进程数量
-    int max_time_slice;    // 最大时间片
+    list_entry_t run_list;
+    unsigned int proc_num;
+    int max_time_slice;
     // For LAB6 ONLY
-    skew_heap_entry_t *lab6_run_pool; // 优先级队列
+    skew_heap_entry_t *lab6_run_pool;
 };
 
-void sched_init(void);  // 初始化调度器
-void wakeup_proc(struct proc_struct *proc); // 将进程加入运行队列
-void schedule(void); // 调度器
-void sched_class_proc_tick(struct proc_struct *proc); // 调度器类的时间片处理函数
+void sched_init(void);
+void wakeup_proc(struct proc_struct *proc);
+void schedule(void);
+void sched_class_proc_tick(struct proc_struct *proc);
 #endif /* !__KERN_SCHEDULE_SCHED_H__ */

@@ -17,9 +17,9 @@
 static void
 RR_init(struct run_queue *rq)
 {
-    // LAB6: 孙沐赟：2311534
-    list_init(&(rq->run_list)); // 初始化运行队列链表
-    rq->proc_num = 0;           // 进程数量初始化为0
+    // LAB6: YOUR CODE
+    list_init(&(rq->run_list));
+    rq->proc_num = 0;
 }
 
 /*
@@ -33,31 +33,16 @@ RR_init(struct run_queue *rq)
  *
  * hint: see libs/list.h for routines of the list structures.
  */
-/**
- * @brief 将进程加入到运行队列中
- * 
- * @param rq 运行队列指针，指向要加入的运行队列
- * @param proc 进程结构体指针，指向要加入队列的进程
- * 
- * @return 无返回值
- */
 static void
 RR_enqueue(struct run_queue *rq, struct proc_struct *proc)
 {
-    // LAB6: 孙沐赟：2311534
-    // 确保进程的运行链表项为空，即进程当前不在任何运行队列中
+    // LAB6: YOUR CODE
     assert(list_empty(&(proc->run_link)));
-    // 将进程添加到运行队列的链表中
     list_add_before(&(rq->run_list), &(proc->run_link));
-    // 检查并设置进程的时间片
-    if (proc->time_slice == 0 || proc->time_slice > rq->max_time_slice)
-    {
-        // 如果时间片为0或大于最大时间片，则设置时间片为最大时间片
+    if (proc->time_slice == 0 || proc->time_slice > rq->max_time_slice) {
         proc->time_slice = rq->max_time_slice;
     }
-    // 设置进程所属的运行队列
     proc->rq = rq;
-    // 增加运行队列中的进程数量计数
     rq->proc_num++;
 }
 
@@ -68,24 +53,12 @@ RR_enqueue(struct run_queue *rq, struct proc_struct *proc)
  *
  * hint: see libs/list.h for routines of the list structures.
  */
-/**
- * @brief 从运行队列中移除指定进程
- * 
- * 该函数将指定的进程从运行队列中出队，更新队列中的进程数量
- * 
- * @param rq 运行队列指针，指向要操作的运行队列
- * @param proc 进程结构体指针，指向要从队列中移除的进程
- * @return 无返回值
- */
 static void
 RR_dequeue(struct run_queue *rq, struct proc_struct *proc)
 {
-    // LAB6: 孙沐赟：2311534
-    // 检查进程的运行链表不为空且进程确实属于当前运行队列
+    // LAB6: YOUR CODE
     assert(!list_empty(&(proc->run_link)) && proc->rq == rq);
-    // 从链表中删除进程节点并初始化链表节点
     list_del_init(&(proc->run_link));
-    // 减少运行队列中的进程数量计数
     rq->proc_num--;
 }
 
@@ -97,25 +70,14 @@ RR_dequeue(struct run_queue *rq, struct proc_struct *proc)
  *
  * hint: see libs/list.h for routines of the list structures.
  */
-/**
- * RR_pick_next - 选择下一个要运行的进程（轮转调度算法）
- * @rq: 运行队列指针
- *
- * 从运行队列中按照轮转调度算法选择下一个要运行的进程
- * 返回值: 指向选中的进程控制块的指针，如果没有可运行进程则返回NULL
- */
 static struct proc_struct *
 RR_pick_next(struct run_queue *rq)
 {
-    // LAB6: 孙沐赟：2311534
-    // 获取运行队列中的第一个进程节点
+    // LAB6: YOUR CODE
     list_entry_t *le = list_next(&(rq->run_list));
-    // 检查队列是否为空，如果不为空则返回第一个进程
-    if (le != &(rq->run_list))
-    {
+    if (le != &(rq->run_list)) {
         return le2proc(le, run_link);
     }
-    // 队列为空，返回NULL
     return NULL;
 }
 
@@ -129,14 +91,12 @@ RR_pick_next(struct run_queue *rq)
 static void
 RR_proc_tick(struct run_queue *rq, struct proc_struct *proc)
 {
-    // LAB6: 孙沐赟：2311534
-    if (proc->time_slice > 0)
-    {
-        proc->time_slice--; // 时间片减一
+    // LAB6: YOUR CODE
+    if (proc->time_slice > 0) {
+        proc->time_slice--;
     }
-    if (proc->time_slice == 0)
-    {
-        proc->need_resched = 1; // 时间片用完，需要调度
+    if (proc->time_slice == 0) {
+        proc->need_resched = 1;
     }
 }
 

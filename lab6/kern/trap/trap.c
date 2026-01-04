@@ -241,55 +241,32 @@ static inline void trap_dispatch(struct trapframe *tf)
  * the code in kern/trap/trapentry.S restores the old CPU state saved in the
  * trapframe and then uses the iret instruction to return from the exception.
  * */
-/**
- * @brief 处理系统陷阱的主函数
- * 
- * 该函数根据陷阱类型进行分发处理，处理内核态和用户态的陷阱，
- * 并在适当的时候进行进程调度和退出处理
- * 
- * @param tf 指向陷阱帧结构体的指针，包含陷阱发生时的寄存器状态
- * @return 无返回值
- */
 void trap(struct trapframe *tf)
 {
     // dispatch based on what type of trap occurred
     //    cputs("some trap");
-    
-    // 检查当前进程是否为空，决定处理流程
     if (current == NULL)
     {
-        // 当前没有运行进程，直接调用陷阱分发函数
         trap_dispatch(tf);
     }
     else
     {
-        // 保存当前进程的陷阱帧
         struct trapframe *otf = current->tf;
         current->tf = tf;
 
-        // 判断陷阱是否发生在内核态
         bool in_kernel = trap_in_kernel(tf);
 
-        // 分发处理陷阱
         trap_dispatch(tf);
 
-        // 恢复当前进程的原始陷阱帧
         current->tf = otf;
-        
-        // 如果陷阱发生在用户态，需要进行额外处理
         if (!in_kernel)
         {
-            // 检查进程是否标记为退出状态
             if (current->flags & PF_EXITING)
             {
-                // 执行进程退出操作
                 do_exit(-E_KILLED);
             }
-            
-            // 检查是否需要进行进程调度
             if (current->need_resched)
             {
-                // 执行进程调度
                 schedule();
             }
         }

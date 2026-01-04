@@ -10,10 +10,10 @@
 // process's state in his life cycle
 enum proc_state
 {
-    PROC_UNINIT = 0,    // 未初始化
-    PROC_SLEEPING,      // 睡眠
-    PROC_RUNNABLE,      // 可运行（可能正在运行）
-    PROC_ZOMBIE,        // 僵尸状态（等待父进程回收）
+    PROC_UNINIT = 0, // uninitialized
+    PROC_SLEEPING,   // sleeping
+    PROC_RUNNABLE,   // runnable(maybe running)
+    PROC_ZOMBIE,     // almost dead, and wait parent proc to reclaim his resource
 };
 
 struct context
@@ -42,29 +42,29 @@ extern list_entry_t proc_list;
 
 struct proc_struct
 {
-    enum proc_state state;              // 进程状态
-    int pid;                            // 进程ID
-    int runs;                           // 运行次数
-    uintptr_t kstack;                   // 内核栈地址
-    volatile bool need_resched;         // 是否需要重新调度
-    struct proc_struct *parent;         // 父进程
-    struct mm_struct *mm;               // 内存管理结构
-    struct context context;             // 上下文（用于进程切换）
-    struct trapframe *tf;               // 中断帧
-    uintptr_t pgdir;                    // 页目录表基地址
-    uint32_t flags;                     // 进程标志
-    char name[PROC_NAME_LEN + 1];       // 进程名
-    list_entry_t list_link;             // 进程链表
-    list_entry_t hash_link;             // 进程哈希表
-    int exit_code;                      // 退出码
-    uint32_t wait_state;                // 等待状态
-    struct proc_struct *cptr, *yptr, *optr;  // 进程树关系
-    struct run_queue *rq;               // 所属运行队列
-    list_entry_t run_link;              // 运行队列链表
-    int time_slice;                     // 时间片
-    skew_heap_entry_t lab6_run_pool;    // LAB6: 运行池入口
-    uint32_t lab6_stride;               // LAB6: 当前步进值
-    uint32_t lab6_priority;             // LAB6: 优先级
+    enum proc_state state;                  // Process state
+    int pid;                                // Process ID
+    int runs;                               // the running times of Proces
+    uintptr_t kstack;                       // Process kernel stack
+    volatile bool need_resched;             // bool value: need to be rescheduled to release CPU?
+    struct proc_struct *parent;             // the parent process
+    struct mm_struct *mm;                   // Process's memory management field
+    struct context context;                 // Switch here to run process
+    struct trapframe *tf;                   // Trap frame for current interrupt
+    uintptr_t pgdir;                        // the base addr of Page Directroy Table(PDT)
+    uint32_t flags;                         // Process flag
+    char name[PROC_NAME_LEN + 1];           // Process name
+    list_entry_t list_link;                 // Process link list
+    list_entry_t hash_link;                 // Process hash list
+    int exit_code;                          // exit code (be sent to parent proc)
+    uint32_t wait_state;                    // waiting state
+    struct proc_struct *cptr, *yptr, *optr; // relations between processes
+    struct run_queue *rq;                   // running queue contains Process
+    list_entry_t run_link;                  // the entry linked in run queue
+    int time_slice;                         // time slice for occupying the CPU
+    skew_heap_entry_t lab6_run_pool;        // FOR LAB6 ONLY: the entry in the run pool
+    uint32_t lab6_stride;                   // FOR LAB6 ONLY: the current stride of the process
+    uint32_t lab6_priority;                 // FOR LAB6 ONLY: the priority of process, set by lab6_set_priority(uint32_t)
 };
 
 #define PF_EXITING 0x00000001 // getting shutdown

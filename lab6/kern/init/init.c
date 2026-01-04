@@ -25,16 +25,23 @@ int kern_init(void)
     const char *message = "(THU.CST) os is loading ...";
     cprintf("%s\n\n", message);
 
-    print_kerninfo();                     // 打印内核信息
-    dtb_init();                           // 初始化设备树
-    pmm_init();                           // 初始化物理内存管理
-    pic_init();                           // 初始化中断控制器
-    idt_init();                           // 初始化中断描述符表
-    vmm_init();                           // 初始化虚拟内存管理
-    sched_init();                         // 初始化调度器
-    proc_init();                          // 初始化进程管理
-    clock_init();                         // 初始化时钟中断
-    intr_enable();                        // 使能中断
-    
-    cpu_idle();                           // 进入空闲进程循环
+    print_kerninfo();
+
+    // grade_backtrace();
+
+    dtb_init(); // init dtb
+
+    pmm_init(); // init physical memory management
+
+    pic_init(); // init interrupt controller
+    idt_init(); // init interrupt descriptor table
+
+    vmm_init(); // init virtual memory management
+    sched_init();
+    proc_init(); // init process table
+
+    clock_init();  // init clock interrupt
+    intr_enable(); // enable irq interrupt
+
+    cpu_idle(); // run idle process
 }

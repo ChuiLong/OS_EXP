@@ -29,7 +29,7 @@ extern struct sched_class MLFQ_sched_class;
 /*
  * 调度算法选择宏
  * 修改下面的定义来切换不同的调度算法
- *
+ * 
  * 选项:
  *   SCHED_RR       - Round Robin (默认)
  *   SCHED_STRIDE   - Stride Scheduling
@@ -39,14 +39,14 @@ extern struct sched_class MLFQ_sched_class;
  *   SCHED_MLFQ     - Multi-Level Feedback Queue
  */
 
-#define SCHED_RR 0       // Round Robin (时间片轮转)
-#define SCHED_STRIDE 1   // Stride Scheduling (步进调度)
-#define SCHED_FIFO 2     // First In First Out (先来先服务)
-#define SCHED_SJF 3      // Shortest Job First (短作业优先)
-#define SCHED_PRIORITY 4 // Priority Scheduling (优先级调度)
-#define SCHED_MLFQ 5     // Multi-Level Feedback Queue (多级反馈队列)
+#define SCHED_RR       0
+#define SCHED_STRIDE   1
+#define SCHED_FIFO     2
+#define SCHED_SJF      3
+#define SCHED_PRIORITY 4
+#define SCHED_MLFQ     5
 
 // 当前选择的调度算法（修改此值来切换）
-#define CURRENT_SCHED SCHED_RR
+#define CURRENT_SCHED SCHED_STRIDE
 
 #endif /* !__KERN_SCHEDULE_SCHED_ALL_H__ */
