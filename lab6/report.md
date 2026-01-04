@@ -256,3 +256,423 @@ $$N_i \propto Priority_i$$
 
 ucore 的 `sched_class` 框架具有极高的灵活性。通过将数据结构（`run_queue` 中的 list 和 heap）与算法逻辑分离，我们能够轻松实现从简单的 FIFO 到复杂的 Stride/MLFQ 等多种调度策略。不同的算法在响应时间、周转时间、吞吐量和公平性上各有取舍，操作系统应根据具体的应用场景（如服务器、桌面、嵌入式）选择最合适的调度器。
 
+## 扩展练习 Challenge 2：实现多种调度算法
+
+### 4.1 实现的调度算法
+
+除了基础的RR和Stride调度外，还实现了以下调度算法：
+
+#### 4.1.1 FIFO (先来先服务) - `sched_FIFO.c`
+
+**算法特点：**
+- 非抢占式调度
+- 按进程到达顺序执行
+- 每个进程运行直到完成
+
+**实现代码：**
+```c
+#define FIFO_TIME_SLICE 100  // 较长时间片模拟非抢占
+
+static void FIFO_enqueue(struct run_queue *rq, struct proc_struct *proc) {
+    list_add_before(&(rq->run_list), &(proc->run_link));  // 加入队尾
+    proc->time_slice = FIFO_TIME_SLICE;
+    proc->rq = rq;
+    rq->proc_num++;
+}
+
+static struct proc_struct *FIFO_pick_next(struct run_queue *rq) {
+    list_entry_t *le = list_next(&(rq->run_list));  // 选择队首
+    if (le != &(rq->run_list)) {
+        return le2proc(le, run_link);
+    }
+    return NULL;
+}
+```
+
+#### 4.1.2 SJF (短作业优先) - `sched_SJF.c`
+
+**算法特点：**
+- 非抢占式调度
+- 选择预计执行时间最短的进程
+- 使用 `lab6_priority` 存储预计执行时间（值越小越优先）
+- 使用斜堆实现O(log n)的最小值查找
+
+**实现代码：**
+```c
+// SJF比较函数：预计执行时间小的优先
+static int proc_sjf_comp_f(void *a, void *b) {
+    struct proc_struct *p = le2proc(a, lab6_run_pool);
+    struct proc_struct *q = le2proc(b, lab6_run_pool);
+    int32_t c = p->lab6_priority - q->lab6_priority;
+    if (c > 0) return 1;
+    else if (c == 0) return 0;
+    else return -1;
+}
+
+static void SJF_enqueue(struct run_queue *rq, struct proc_struct *proc) {
+    rq->lab6_run_pool = skew_heap_insert(rq->lab6_run_pool, 
+                                          &(proc->lab6_run_pool), 
+                                          proc_sjf_comp_f);
+    proc->time_slice = SJF_TIME_SLICE;
+    proc->rq = rq;
+    rq->proc_num++;
+}
+
+static struct proc_struct *SJF_pick_next(struct run_queue *rq) {
+    if (rq->lab6_run_pool == NULL) return NULL;
+    return le2proc(rq->lab6_run_pool, lab6_run_pool);  // 堆顶即最小值
+}
+```
+
+#### 4.1.3 Priority (优先级调度) - `sched_Priority.c`
+
+**算法特点：**
+- 非抢占式静态优先级调度
+- `lab6_priority` 值越大优先级越高
+- 使用斜堆实现高效的最大值查找
+
+**实现代码：**
+```c
+// 优先级比较函数：priority大的在堆顶
+static int proc_priority_comp_f(void *a, void *b) {
+    struct proc_struct *p = le2proc(a, lab6_run_pool);
+    struct proc_struct *q = le2proc(b, lab6_run_pool);
+    // 取负值使高优先级在堆顶
+    int32_t c = (int32_t)q->lab6_priority - (int32_t)p->lab6_priority;
+    if (c > 0) return 1;
+    else if (c == 0) return 0;
+    else return -1;
+}
+```
+
+#### 4.1.4 MLFQ (多级反馈队列) - `sched_MLFQ.c`
+
+**算法特点：**
+- 4级优先级队列
+- 新进程从最高优先级（级别0）开始
+- 时间片用完后降级到下一级
+- 高优先级时间片短，低优先级时间片长
+- 使用 `lab6_stride` 存储当前队列级别
+
+**实现代码：**
+```c
+#define MLFQ_LEVELS 4
+#define MLFQ_BASE_SLICE 2
+
+// 获取指定级别的时间片：级别0=2, 级别1=4, 级别2=8, 级别3=16
+static int get_level_time_slice(int level) {
+    return MLFQ_BASE_SLICE << level;
+}
+
+static void MLFQ_enqueue(struct run_queue *rq, struct proc_struct *proc) {
+    if (proc->lab6_stride >= MLFQ_LEVELS) {
+        proc->lab6_stride = 0;  // 新进程从级别0开始
+    }
+    if (proc->time_slice == 0) {
+        proc->time_slice = get_level_time_slice(proc->lab6_stride);
+    }
+    // 按级别顺序插入队列
+    list_entry_t *le = list_next(&(rq->run_list));
+    while (le != &(rq->run_list)) {
+        struct proc_struct *p = le2proc(le, run_link);
+        if (p->lab6_stride > proc->lab6_stride) break;
+        le = list_next(le);
+    }
+    list_add_before(le, &(proc->run_link));
+    proc->rq = rq;
+    rq->proc_num++;
+}
+
+static void MLFQ_proc_tick(struct run_queue *rq, struct proc_struct *proc) {
+    if (proc->time_slice > 0) proc->time_slice--;
+    if (proc->time_slice == 0) {
+        // 时间片用完，降级
+        if (proc->lab6_stride < MLFQ_LEVELS - 1) {
+            proc->lab6_stride++;
+        }
+        proc->time_slice = get_level_time_slice(proc->lab6_stride);
+        proc->need_resched = 1;
+    }
+}
+```
+
+### 4.2 调度算法切换机制
+
+创建了 `sched_all.h` 头文件，通过宏定义切换调度算法：
+
+```c
+#define SCHED_RR       0
+#define SCHED_STRIDE   1
+#define SCHED_FIFO     2
+#define SCHED_SJF      3
+#define SCHED_PRIORITY 4
+#define SCHED_MLFQ     5
+
+// 修改此值切换调度算法
+#define CURRENT_SCHED SCHED_STRIDE
+```
+
+在 `sched.c` 中根据宏选择调度器：
+```c
+#if CURRENT_SCHED == SCHED_RR
+    sched_class = &default_sched_class;
+#elif CURRENT_SCHED == SCHED_STRIDE
+    sched_class = &stride_sched_class;
+// ... 其他调度器
+#endif
+```
+
+### 4.3 测试用例设计 (`user/sched_test.c`)
+
+设计了5个测试场景：
+
+| 测试 | 描述 | 测试目的 |
+|------|------|----------|
+| Test 1 | CPU密集型任务混合 | 测试不同工作量进程的调度 |
+| Test 2 | 短作业vs长作业 | 测试SJF算法的效果 |
+| Test 3 | 优先级测试 | 测试优先级调度的正确性 |
+| Test 4 | MLFQ行为测试 | 测试进程降级行为 |
+| Test 5 | 公平性测试 | 测试RR/Stride的公平性 |
+
+### 4.4 各调度算法对比分析
+
+| 指标 | FIFO | SJF | RR | Priority | Stride | MLFQ |
+|------|------|-----|-----|----------|--------|------|
+| **平均等待时间** | 较长 | 最短 | 中等 | 取决于优先级 | 可控 | 中等 |
+| **平均周转时间** | 较长 | 最短 | 中等 | 取决于优先级 | 可控 | 中等 |
+| **响应时间** | 长 | 长 | 短 | 不确定 | 可控 | 短 |
+| **公平性** | 不公平 | 不公平 | 公平 | 不公平 | 可控公平 | 自适应 |
+| **饥饿问题** | 无 | 有（长作业） | 无 | 有（低优先级） | 无 | 无 |
+| **实现复杂度** | 简单 | 中等 | 简单 | 中等 | 中等 | 复杂 |
+| **CPU利用率** | 高 | 高 | 略低 | 高 | 高 | 高 |
+
+### 4.5 各算法适用场景
+
+#### FIFO (先来先服务)
+- **适用场景**：批处理系统、任务执行时间相近的环境
+- **不适用**：交互式系统、短作业多的环境
+- **优点**：实现简单，无饥饿
+- **缺点**：护航效应（短作业等待长作业）
+
+#### SJF (短作业优先)
+- **适用场景**：批处理系统、作业时间可预知的环境
+- **不适用**：交互式系统、作业时间无法预知的环境
+- **优点**：平均等待时间最优
+- **缺点**：长作业可能饥饿，需预知执行时间
+
+#### RR (时间片轮转)
+- **适用场景**：分时系统、交互式系统
+- **不适用**：实时系统、对响应时间要求极高的环境
+- **优点**：公平、响应快、无饥饿
+- **缺点**：上下文切换开销，时间片大小难以确定
+
+#### Priority (优先级调度)
+- **适用场景**：需要区分任务重要性的系统、实时系统
+- **不适用**：公平性要求高的环境
+- **优点**：重要任务优先执行
+- **缺点**：低优先级饥饿，优先级反转问题
+
+#### Stride (步进调度)
+- **适用场景**：需要精确控制CPU时间分配的环境
+- **不适用**：简单系统（实现复杂度不值得）
+- **优点**：确定性比例共享，无饥饿
+- **缺点**：实现复杂，需要处理溢出
+
+#### MLFQ (多级反馈队列)
+- **适用场景**：通用操作系统、工作负载多样的环境
+- **不适用**：实时系统
+- **优点**：自适应、兼顾交互和批处理
+- **缺点**：参数调优困难，实现复杂
+
+### 4.6 实际测试结果
+
+使用 `priority` 测试程序对6种调度算法进行测试，测试程序创建5个子进程，分别设置优先级1-5（或6），统计各进程的执行次数(acc)。
+
+#### 4.6.1 RR (Round Robin) 调度测试结果
+
+```
+sched class: RR_scheduler
+kernel_execve: pid = 2, name = "priority".
+set priority to 6
+main: fork ok,now need to wait pids.
+set priority to 1
+set priority to 2
+set priority to 3
+set priority to 4
+set priority to 5
+child pid 3, acc 848000, time 2010
+child pid 4, acc 832000, time 2010
+child pid 5, acc 840000, time 2010
+child pid 6, acc 840000, time 2010
+child pid 7, acc 840000, time 2010
+sched result: 1 1 1 1 1
+```
+
+**分析**：RR调度下，各进程执行次数基本相等（约840000），体现了时间片轮转的公平性。优先级设置被忽略，所有进程获得几乎相同的CPU时间。
+
+#### 4.6.2 Stride 调度测试结果
+
+```
+sched class: stride_scheduler
+kernel_execve: pid = 2, name = "priority".
+set priority to 6
+main: fork ok,now need to wait pids.
+set priority to 5
+set priority to 4
+set priority to 3
+set priority to 2
+set priority to 1
+child pid 7, acc 1256000, time 2010
+child pid 6, acc 1044000, time 2010
+child pid 5, acc 832000, time 2010
+child pid 4, acc 628000, time 2010
+child pid 3, acc 420000, time 2010
+sched result: 1 1 2 2 3
+```
+
+**分析**：Stride调度下，执行次数与优先级成正比：
+- 优先级5: 1256000 (比例 ≈ 3.0)
+- 优先级4: 1044000 (比例 ≈ 2.5)
+- 优先级3: 832000 (比例 ≈ 2.0)
+- 优先级2: 628000 (比例 ≈ 1.5)
+- 优先级1: 420000 (比例 ≈ 1.0)
+
+这验证了Stride调度的比例共享特性。
+
+#### 4.6.3 FIFO 调度测试结果
+
+```
+sched class: FIFO_scheduler
+kernel_execve: pid = 2, name = "priority".
+set priority to 6
+main: fork ok,now need to wait pids.
+set priority to 1
+set priority to 2
+set priority to 3
+child pid 5, acc 20000, time 2010
+set priority to 4
+child pid 6, acc 4000, time 2010
+set priority to 5
+child pid 7, acc 4000, time 2010
+child pid 3, acc 1836000, time 2010
+child pid 4, acc 1856000, time 2020
+sched result: 1 1 0 0 0
+```
+
+**分析**：FIFO调度下，先到达的进程(pid 3, 4)获得大量CPU时间（约1.8M），后到达的进程(pid 5,6,7)只获得很少时间（约4000-20000）。这体现了FIFO的"护航效应"——先到的长作业会阻塞后到的短作业。
+
+#### 4.6.4 SJF 调度测试结果
+
+```
+sched class: SJF_scheduler
+kernel_execve: pid = 2, name = "priority".
+set priority to 6
+main: fork ok,now need to wait pids.
+set priority to 5
+set priority to 4
+set priority to 3
+child pid 5, acc 20000, time 2010
+set priority to 2
+child pid 4, acc 4000, time 2010
+set priority to 1
+child pid 3, acc 4000, time 2010
+child pid 6, acc 1968000, time 2010
+child pid 7, acc 1972000, time 2010
+sched result: 1 1 5 492 493
+```
+
+**分析**：SJF使用priority值作为预计执行时间（值小=短作业），优先级低的进程（值小）先执行完成。优先级高的进程(pid 6,7)作为"长作业"最后执行，获得大量CPU时间。
+
+#### 4.6.5 Priority 调度测试结果
+
+```
+sched class: Priority_scheduler
+kernel_execve: pid = 2, name = "priority".
+set priority to 6
+main: fork ok,now need to wait pids.
+set priority to 5
+child pid 7, acc 4032000, time 2010
+set priority to 4
+child pid 6, acc 4000, time 2010
+set priority to 3
+child pid 5, acc 4000, time 2010
+set priority to 2
+child pid 4, acc 4000, time 2010
+set priority to 1
+child pid 3, acc 4000, time 2020
+sched result: 1 1 1 1 1008
+```
+
+**分析**：Priority调度下，最高优先级进程(pid 7, priority=5)获得绝大部分CPU时间（4032000），其他进程几乎无法执行（仅4000）。这体现了非抢占式优先级调度的特点：高优先级进程独占CPU直到完成。
+
+#### 4.6.6 MLFQ 调度测试结果
+
+```
+sched class: MLFQ_scheduler
+kernel_execve: pid = 2, name = "priority".
+set priority to 6
+main: fork ok,now need to wait pids.
+set priority to 1
+set priority to 2
+set priority to 3
+set priority to 4
+set priority to 5
+child pid 6, acc 648000, time 2010
+child pid 7, acc 596000, time 2010
+child pid 3, acc 916000, time 2010
+child pid 4, acc 904000, time 2010
+child pid 5, acc 908000, time 2010
+sched result: 1 1 1 1 1
+```
+
+**分析**：MLFQ调度下，各进程执行次数较为均衡（596000-916000），但比RR略有差异。这是因为MLFQ会根据进程行为动态调整优先级——消耗时间片多的进程会被降级，使得所有进程趋于公平。
+
+### 4.7 测试结果对比总结
+
+| 调度算法 | pid3 (pri=1) | pid4 (pri=2) | pid5 (pri=3) | pid6 (pri=4) | pid7 (pri=5) | 特点 |
+|----------|-------------|-------------|-------------|-------------|-------------|------|
+| **RR** | 848000 | 832000 | 840000 | 840000 | 840000 | 完全公平 |
+| **Stride** | 420000 | 628000 | 832000 | 1044000 | 1256000 | 按优先级比例分配 |
+| **FIFO** | 1836000 | 1856000 | 20000 | 4000 | 4000 | 先到先服务 |
+| **SJF** | 4000 | 4000 | 20000 | 1968000 | 1972000 | 短作业优先 |
+| **Priority** | 4000 | 4000 | 4000 | 4000 | 4032000 | 高优先级独占 |
+| **MLFQ** | 916000 | 904000 | 908000 | 648000 | 596000 | 自适应公平 |
+
+---
+
+
+
+
+## 与OS的联系和差异
+
+Lab6 的核心目标是**通过实现调度框架和具体调度算法，加深对进程调度机制与策略的理解。**
+
+| 实验中的知识点               | 对应的 OS 原理知识点  | 对实验知识点的理解                                           | 对二者关系、联系与差异的理解                                 |
+| ---------------------------- | --------------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| 进程调度整体框架             | 进程调度的基本模型    | 实验中首先搭建了统一的调度框架，使调度策略可以通过接口方式进行替换 | 原理中强调“策略与机制分离”，实验通过 scheduler 抽象结构体将这一思想具体化 |
+| 进程状态转换                 | 进程的生命周期        | 实验中明确区分了 RUNNABLE、RUNNING、WAITING 等状态           | 实验实现帮助理解调度的前提是进程状态的正确维护，原理中通常只给状态图，实验则体现了状态切换的触发时机 |
+| 上下文切换（context switch） | CPU 上下文保存与恢复  | 实验通过切换 trapframe 和内核栈完成进程切换                  | 相比原理中抽象的“切换”，实验让人直观认识到切换成本和实现复杂度 |
+| 时钟中断触发调度             | 抢占式调度            | 实验中依赖时钟中断触发调度点                                 | 原理中抢占调度是概念，实验中时钟中断是具体实现手段           |
+| 调度器接口设计               | 调度算法的可扩展性    | scheduler 使用函数指针组织不同调度算法                       | 实验体现了良好的模块化设计，符合原理中“可扩展内核”的思想     |
+| 就绪队列                     | 运行队列（run queue） | 实验中通过链表或优先队列管理可运行进程                       | 原理强调队列抽象，实验具体体现不同数据结构对调度效率的影响   |
+| RR 调度算法                  | 时间片轮转调度        | RR 算法按时间片公平轮流执行进程                              | 实验中 RR 算法帮助理解“公平性”与“响应时间”的权衡             |
+| 时间片                       | 时间共享系统          | 实验中每个进程最多运行一个时间片                             | 原理中的时间片是调度的基本单位，实验中通过时钟中断强制执行   |
+| Stride 调度算法              | 按比例公平调度        | Stride 通过步长控制进程获得 CPU 的比例                       | 实验让抽象的“公平性”变成了可计算、可验证的数值过程           |
+| Stride 值与 Pass 值          | 调度权重与虚拟时间    | 实验中通过累加 pass 值决定下一个运行进程                     | 原理中虚拟时间概念较抽象，实验中通过数值演示其运行机制       |
+| 优先队列实现 Stride          | 高效调度结构          | 使用优先队列快速选取最小 pass 值进程                         | 实验体现了算法与数据结构之间的紧密联系                       |
+| idle 进程                    | 空闲进程              | 当无可运行进程时执行 idle                                    | 实验体现操作系统必须始终有“兜底执行单元”的思想               |
+| 调度结果验证                 | 调度策略正确性        | 通过输出结果验证调度顺序                                     | 实验补充了原理中较少涉及的“验证与调试”视角                   |
+
+| OS 原理中的重要知识点 | 在操作系统中的重要性 | 实验中未体现的原因              | 补充理解说明                     |
+| --------------------- | -------------------- | ------------------------------- | -------------------------------- |
+| 多核调度（SMP）       | 现代操作系统的基础   | uCore 为单核实验内核            | 多核下需要考虑负载均衡和并发同步 |
+| CPU 亲和性            | 提高缓存命中率       | 实验未涉及多核缓存              | 真实系统中显著影响性能           |
+| 优先级反转            | 实时系统问题         | 实验未实现锁机制                | 原理中常结合优先级继承讨论       |
+| 实时调度算法          | 实时系统保障         | 实验以通用 OS 为目标            | 如 EDF、RM 等算法较复杂          |
+| CFS 调度器            | Linux 核心调度机制   | 实现复杂                        | Stride 可视为其思想简化版        |
+| I/O 感知调度          | 提高交互性能         | 实验未区分 I/O / CPU 密集型进程 | 真实系统中极其重要               |
+| 能耗感知调度          | 移动与服务器系统     | 实验目标不涉及能耗              | 属于系统级优化                   |
+| 抢占粒度控制          | 调度延迟控制         | 实验时间片固定                  | 实际系统中动态调整               |
+| 调度统计与监控        | 系统调优             | 实验只关注正确性                | 原理中强调可观测性               |
+
+通过 Lab6 的实现，我从代码层面完整理解了操作系统中进程调度的基本机制与策略选择问题。实验将调度框架、进程切换、调度算法有机结合，使我认识到调度不仅是“选谁运行”，而是涉及状态管理、时钟中断、数据结构设计等多个子系统的协同工作。与操作系统原理课程相比，实验更侧重“调度机制如何被实现”，而原理课程更强调“不同调度策略的设计目标与适用场景”。通过将 RR 与 Stride 调度算法进行对比实现，我对公平性、响应时间以及调度复杂度之间的权衡有了更加直观和深入的理解。
