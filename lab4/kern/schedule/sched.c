@@ -17,8 +17,6 @@ schedule(void) {
     struct proc_struct *next = NULL;
     local_intr_save(intr_flag);
     {
-        // 牛逼！！！cxh!!!!!!
-        // cxh vs ww ：ww win!
         current->need_resched = 0;
         // 如果当前是 idleproc，从 proc_list（链表头）开始扫描整个链表（从头查找可运行进程）
         // 否则从 current 的节点开始扫描
