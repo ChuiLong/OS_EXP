@@ -203,6 +203,16 @@ void exception_handler(struct trapframe *tf)
         break;
     case CAUSE_STORE_PAGE_FAULT:
         cprintf("Store/AMO page fault\n");
+        // 检查是否在内核中发生错误
+        if (trap_in_kernel(tf)) {
+            print_trapframe(tf);
+            panic("Store/AMO page fault in kernel!"); // 内核错误直接 panic，方便调试
+        }
+        if (current->mm != NULL) {
+            // 用户进程页面错误，打印信息并终止进程
+            print_trapframe(tf);
+            do_exit(-E_KILLED);
+        }
         break;
     default:
         print_trapframe(tf);

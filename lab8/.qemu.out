@@ -23,10 +23,10 @@ PMP1: 0x0000000000000000-0xffffffffffffffff (A,R,W,X)
 
 Special kernel symbols:
   entry  0xc020004a (virtual)
-  etext  0xc020ab38 (virtual)
-  edata  0xc0290060 (virtual)
-  end    0xc0295910 (virtual)
-Kernel executable memory footprint: 599KB
+  etext  0xc020b4dc (virtual)
+  edata  0xc0291060 (virtual)
+  end    0xc0296910 (virtual)
+Kernel executable memory footprint: 603KB
 DTB Init
 HartID: 0
 DTB Address: 0x82200000
@@ -49,16 +49,11 @@ kmalloc_init() succeeded!
 check_vma_struct() succeeded!
 check_vmm() succeeded.
 sched class: RR_scheduler
-Initrd: 0xc0213010 - 0xc021ad0f, size: 0x00007d00
-Initrd: 0xc021ad10 - 0xc029000f, size: 0x00075300
+Initrd: 0xc0214010 - 0xc021bd0f, size: 0x00007d00
+Initrd: 0xc021bd10 - 0xc029100f, size: 0x00075300
 sfs: mount: 'simple file system' (106/11/117)
 vfs: mount disk0.
 ++ setup timer interrupts
 kernel_execve: pid = 2, name = "sh".
-kernel_execve: pid = 2, name = "sh".
-sfs: cleanup: 'simple file system' (106/11/117)
-all user-mode processes have quit.
-init check memory pass.
-kernel panic at kern/process/proc.c:605:
-    initproc exit.
-
+user sh is running!!!
+$ 

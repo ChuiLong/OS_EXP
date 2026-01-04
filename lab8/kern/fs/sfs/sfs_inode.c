@@ -345,14 +345,14 @@ sfs_bmap_free_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, uint32_t index) 
 
 /*
  * sfs_bmap_load_nolock - according to the DIR's inode and the logical index of block in inode, find the NO. of disk block.
- * @sfs:      sfs file system
- * @sin:      sfs inode in memory
- * @index:    the logical index of disk block in inode
- * @ino_store:the NO. of disk block
+ * @sfs:      SFS 文件系统实例（用于读写位图、分配块等）。
+ * @sin:      内存中的 inode（里面的 sin->din 指向磁盘 inode 缓存）。
+ * @index:    要访问的“逻辑块号”（从 0 开始）。
+ * 可选输出参数；不为 NULL 时返回映射得到的物理块号 ino。
  */
 static int
 sfs_bmap_load_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, uint32_t index, uint32_t *ino_store) {
-    struct sfs_disk_inode *din = sin->din;
+    struct sfs_disk_inode *din = sin->din;//取出磁盘 inode：
     assert(index <= din->blocks);
     int ret;
     uint32_t ino;
@@ -360,7 +360,7 @@ sfs_bmap_load_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, uint32_t index, 
     if ((ret = sfs_bmap_get_nolock(sfs, sin, index, create, &ino)) != 0) {
         return ret;
     }
-    assert(sfs_block_inuse(sfs, ino));
+    assert(sfs_block_inuse(sfs, ino));//如果这里炸了，通常意味着位图维护或分配流程有 bug（比如分配了 0、越界、或者位图没标记）。
     if (create) {
         din->blocks ++;
     }
@@ -495,7 +495,7 @@ sfs_dirent_findino_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, uint32_t in
  * @node_store: the inode corresponding the file name in DIR
  * @slot:       the logical index of file entry
  */
-static int
+static int//这个函数 sfs_lookup_once 做的是“一次目录项查找”：在某个目录 inode（sin）里按名字 name 找到对应的子项，并把它的 inode（内存中的 struct inode *）返回给 node_store，同时可选返回该目录项所在的 slot 索引。
 sfs_lookup_once(struct sfs_fs *sfs, struct sfs_inode *sin, const char *name, struct inode **node_store, int *slot) {
     int ret;
     uint32_t ino;
@@ -600,7 +600,48 @@ sfs_io_nolock(struct sfs_fs *sfs, struct sfs_inode *sin, void *buf, off_t offset
 	 *       NOTICE: useful function: sfs_bmap_load_nolock, sfs_buf_op	
 	*/
 
-    
+    // (1) 处理第一个块（可能不对齐）
+    if ((blkoff = offset % SFS_BLKSIZE) != 0) {
+        size = (nblks != 0) ? (SFS_BLKSIZE - blkoff) : (endpos - offset);
+        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, &ino)) != 0) {
+            goto out;
+        }
+        if ((ret = sfs_buf_op(sfs, buf, size, ino, blkoff)) != 0) {
+            goto out;
+        }
+        alen += size;
+        if (nblks == 0) {
+            goto out;
+        }
+        buf += size;
+        blkno++;
+        nblks--;
+    }
+
+    // (2) 处理对齐的中间块
+    while (nblks != 0) {
+        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, &ino)) != 0) {
+            goto out;
+        }
+        if ((ret = sfs_block_op(sfs, buf, ino, 1)) != 0) {
+            goto out;
+        }
+        alen += SFS_BLKSIZE;
+        buf += SFS_BLKSIZE;
+        blkno ++;
+        nblks --;
+    }
+
+    // (3) 处理最后一个块（可能不对齐）
+    if ((size = endpos % SFS_BLKSIZE) != 0) {
+        if ((ret = sfs_bmap_load_nolock(sfs, sin, blkno, &ino)) != 0) {
+            goto out;
+        }
+        if ((ret = sfs_buf_op(sfs, buf, size, ino, 0)) != 0) {
+            goto out;
+        }
+        alen += size;
+    }
 
 out:
     *alenp = alen;

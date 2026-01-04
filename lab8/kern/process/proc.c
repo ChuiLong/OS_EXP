@@ -131,7 +131,6 @@ alloc_proc(void)
          * below fields(add in LAB6) in proc_struct need to be initialized
          *       struct files_struct * filesp;                file struct point        
          */
-        proc->filesp = NULL;  // 初始化文件描述符表为空
         proc->state = PROC_UNINIT;
         proc->pid = -1;
         proc->runs = 0;
@@ -153,8 +152,7 @@ alloc_proc(void)
         proc->lab6_run_pool.left = proc->lab6_run_pool.right = proc->lab6_run_pool.parent = NULL;
         proc->lab6_stride = 0;
         proc->lab6_priority = 0;
-
-        
+        proc->filesp = NULL;
     }
     return proc;
 }
@@ -259,16 +257,16 @@ void proc_run(struct proc_struct *proc)
 {
     if (proc != current)
     {
-        // LAB4:填写你在lab4中实现的代码
         bool intr_flag;
         struct proc_struct *prev = current, *next = proc;
-        local_intr_save(intr_flag);                    // 禁用中断
+        local_intr_save(intr_flag);
         {
-            current = proc;                            // 切换当前进程为要运行的进程
-            lsatp(next->pgdir);                        // 切换页表，以便使用新进程的地址空间
-            switch_to(&(prev->context), &(next->context)); // 实现上下文切换
+            current = proc;
+            lsatp(next->pgdir);
+            flush_tlb();
+            switch_to(&(prev->context), &(next->context));
         }
-        local_intr_restore(intr_flag);                 // 允许中断
+        local_intr_restore(intr_flag);
     }
 }
 
@@ -501,87 +499,49 @@ int do_fork(uint32_t clone_flags, uintptr_t stack, struct trapframe *tf)
         goto fork_out;
     }
     ret = -E_NO_MEM;
-    // LAB8:EXERCISE2 YOUR CODE  HINT:how to copy the fs in parent's proc_struct?
-    // LAB4:填写你在lab4中实现的代码
-    /*
-     * Some Useful MACROs, Functions and DEFINEs, you can use them in below implementation.
-     * MACROs or Functions:
-     *   alloc_proc:   create a proc struct and init fields (lab4:exercise1)
-     *   setup_kstack: alloc pages with size KSTACKPAGE as process kernel stack
-     *   copy_mm:      process "proc" duplicate OR share process "current"'s mm according clone_flags
-     *                 if clone_flags & CLONE_VM, then "share" ; else "duplicate"
-     *   copy_thread:  setup the trapframe on the  process's kernel stack top and
-     *                 setup the kernel entry point and stack of process
-     *   hash_proc:    add proc into proc hash_list
-     *   get_pid:      alloc a unique pid for process
-     *   wakeup_proc:  set proc->state = PROC_RUNNABLE
-     * VARIABLES:
-     *   proc_list:    the process set's list
-     *   nr_process:   the number of process set
-     */
 
-    //    1. call alloc_proc to allocate a proc_struct
-    //    2. call setup_kstack to allocate a kernel stack for child process
-    //    3. call copy_mm to dup OR share mm according clone_flag
-    //    4. call copy_thread to setup tf & context in proc_struct
-    //    5. insert proc_struct into hash_list && proc_list
-    //    6. call wakeup_proc to make the new child process RUNNABLE
-    //    7. set ret vaule using child proc's pid
-
-    // LAB5:填写你在lab5中实现的代码 (update LAB4 steps)
-    /* Some Functions
-     *    set_links:  set the relation links of process.  ALSO SEE: remove_links:  lean the relation links of process
-     *    -------------------
-     *    update step 1: set child proc's parent to current process, make sure current process's wait_state is 0
-     *    update step 5: insert proc_struct into hash_list && proc_list, set the relation links of process
-     */
-    
-    //    1. call alloc_proc to allocate a proc_struct
-    if ((proc = alloc_proc()) == NULL) {
+    if ((proc = alloc_proc()) == NULL)
+    {
         goto fork_out;
     }
-    proc->parent = current;                            // 设置子进程的父进程为当前进程
-    assert(current->wait_state == 0);                  // 确保当前进程没有在等待
-    
-    //    2. call setup_kstack to allocate a kernel stack for child process
-    if (setup_kstack(proc) != 0) {
+
+    proc->parent = current;
+    assert(current->wait_state == 0);
+
+    if (setup_kstack(proc) != 0)
+    {
         goto bad_fork_cleanup_proc;
     }
-    
-    //    3. call copy_mm to dup OR share mm according clone_flag
-    if (copy_mm(clone_flags, proc) != 0) {
-        goto bad_fork_cleanup_kstack;
-    }
-    
-    //    4. call copy_thread to setup tf & context in proc_struct
-    copy_thread(proc, stack, tf);
-    
-    // LAB8: copy files_struct
+
     if (copy_files(clone_flags, proc) != 0)
-    { 
+    {
         goto bad_fork_cleanup_kstack;
     }
-    
-    //    5. insert proc_struct into hash_list && proc_list, set the relation links of process
+
+    if (copy_mm(clone_flags, proc) != 0)
+    {
+        goto bad_fork_cleanup_fs;
+    }
+
+    copy_thread(proc, stack, tf);
+
     bool intr_flag;
     local_intr_save(intr_flag);
     {
         proc->pid = get_pid();
         hash_proc(proc);
-        set_links(proc);                               // 使用 set_links 建立进程间的关系
+        set_links(proc);
     }
     local_intr_restore(intr_flag);
-    
-    //    6. call wakeup_proc to make the new child process RUNNABLE
+
     wakeup_proc(proc);
-    
-    //    7. set ret vaule using child proc's pid
+
     ret = proc->pid;
     
 fork_out:
     return ret;
 
-bad_fork_cleanup_fs: // for LAB8
+bad_fork_cleanup_fs:
     put_files(proc);
 bad_fork_cleanup_kstack:
     put_kstack(proc);
@@ -671,36 +631,205 @@ load_icode_read(int fd, void *buf, size_t len, off_t offset)
 }
 
 // load_icode -  called by sys_exec-->do_execve
-
+//定义一个内部函数：把用户程序（ELF）从文件 fd 加载到“当前进程 current”的新地址空间里，并根据 argc/kargv 初始化用户栈。
 static int
 load_icode(int fd, int argc, char **kargv)
 {
-    /* LAB8:EXERCISE2 YOUR CODE  HINT:how to load the file with handler fd  in to process's memory? how to setup argc/argv?
-     * MACROs or Functions:
-     *  mm_create        - create a mm
-     *  setup_pgdir      - setup pgdir in mm
-     *  load_icode_read  - read raw data content of program file
-     *  mm_map           - build new vma
-     *  pgdir_alloc_page - allocate new memory for  TEXT/DATA/BSS/stack parts
-     *  lsatp             - update Page Directory Addr Register -- CR3
-     */
-    //You can Follow the code form LAB5 which you have completed  to complete 
-    /* (1) create a new mm for current process
-     * (2) create a new PDT, and mm->pgdir= kernel virtual addr of PDT
-     * (3) copy TEXT/DATA/BSS parts in binary to memory space of process
-     *    (3.1) read raw data content in file and resolve elfhdr
-     *    (3.2) read raw data content in file and resolve proghdr based on info in elfhdr
-     *    (3.3) call mm_map to build vma related to TEXT/DATA
-     *    (3.4) callpgdir_alloc_page to allocate page for TEXT/DATA, read contents in file
-     *          and copy them into the new allocated pages
-     *    (3.5) callpgdir_alloc_page to allocate pages for BSS, memset zero in these pages
-     * (4) call mm_map to setup user stack, and put parameters into user stack
-     * (5) setup current process's mm, cr3, reset pgidr (using lsatp MARCO)
-     * (6) setup uargc and uargv in user stacks
-     * (7) setup trapframe for user environment
-     * (8) if up steps failed, you should cleanup the env.
-     */
+    if (current->mm != NULL) {//要求：当前进程此刻必须没有用户态地址空间（通常在 do_execve 里已经把旧 mm 清掉了）。否则说明调用顺序不对，直接内核崩溃。
+        panic("load_icode: current->mm must be empty.\n");
+    }
+
+    int ret = -E_NO_MEM;//要求：当前进程此刻必须没有用户态地址空间（通常在 do_execve 里已经把旧 mm 清掉了）。否则说明调用顺序不对，直接内核崩溃。
+    struct mm_struct *mm;
     
+    //(1) create a new mm for current process(1) 创建新的 mm_struct 结构体
+    if ((mm = mm_create()) == NULL) {
+        goto bad_mm;//分配并初始化一个新的 mm_struct,失败则跳转到处理程序
+    }
+    
+    //(2) create a new PDT, and mm->pgdir= kernel virtual addr of PDT
+    if (setup_pgdir(mm) != 0) {//为这个 mm 分配一页作为顶级页表（RISC-V 的根页表），并把内核映射拷进去（这样用户态页表也能看到内核的高地址映射）
+        goto bad_pgdir_cleanup_mm;
+    }
+    
+    //(3) copy TEXT/DATA section, build BSS parts in binary to memory space of process
+    struct Page *page = NULL;
+    
+    //(3.1) get the file header of the bianry program (ELF format)
+    struct elfhdr __elf, *elf = &__elf;//在栈上放一个 ELF 头结构体 __elf，用 elf 指针指向它。
+    if ((ret = load_icode_read(fd, elf, sizeof(struct elfhdr), 0)) != 0) {
+        goto bad_elf_cleanup_pgdir;
+    }
+    
+    //(3.2) get the entry of the program section headers of the bianry program (ELF format)
+    if (elf->e_magic != ELF_MAGIC) {//校验是否真的是 ELF 文件；不是就返回 ELF 格式错误。
+        ret = -E_INVAL_ELF;
+        goto bad_elf_cleanup_pgdir;
+    }
+
+    struct proghdr __ph, *ph = &__ph;//读取每个 Program Header，映射并加载各段
+    uint32_t vm_flags, perm;//VMA 的权限/属性（VM_READ/VM_WRITE/VM_EXEC 等）。页表 PTE 权限位（PTE_R/PTE_W/PTE_X/PTE_U/PTE_V）。
+    int i;//遍历段表下标。
+    
+    //(3.3) This program is valid?
+    for (i = 0; i < elf->e_phnum; i++) {//遍历 ELF 中所有 Program Header（注意不是 Section Header）。
+        off_t phoff = elf->e_phoff + sizeof(struct proghdr) * i;//计算第 i 个 Program Header 在文件中的偏移：从 e_phoff 开始，每个表项大小 sizeof(proghdr)。
+        if ((ret = load_icode_read(fd, ph, sizeof(struct proghdr), phoff)) != 0) {
+            goto bad_cleanup_mmap;
+        }//读取该 Program Header 到 __ph，失败则跳到 bad_cleanup_mmap（需要把已经建立的映射回滚）。
+        
+        //(3.4) find every program section headers
+        if (ph->p_type != ELF_PT_LOAD) {//只处理可加载段（PT_LOAD）。比如解释器、动态链接信息等不是本实验关心的，直接跳过。
+            continue;
+        }
+        if (ph->p_filesz > ph->p_memsz) {//ELF 规定：文件中这段的大小不能大于内存中映射的大小；否则 ELF 非法。
+            ret = -E_INVAL_ELF;
+            goto bad_cleanup_mmap;
+        }
+        if (ph->p_filesz == 0) {//这里你把 continue 注释掉了：意味着即便 filesz==0（纯 BSS 段）也继续走后续逻辑——这对 sh 的第二个 PT_LOAD（filesz=0, memsz>0, rw-）是必要的，否则 BSS/数据段不会被映射，写静态变量就会 page fault。
+            // continue;
+        }
+        
+        //(3.5) call mm_map fun to setup the new vma ( ph->p_va, ph->p_memsz)) 建 VMA + 计算页表权限
+
+
+        vm_flags = 0, perm = PTE_U | PTE_V;//先清空 VMA 标志，并把 PTE 的“用户可访问 + 有效位”设上（RISC-V 用户页必须有 PTE_U）。
+        //依据 ELF 段标志位 p_flags 设置 vm_flags：
+        // ELF_PF_X → 可执行
+        // ELF_PF_W → 可写
+        // ELF_PF_R → 可读
+        if (ph->p_flags & ELF_PF_X) vm_flags |= VM_EXEC;
+        if (ph->p_flags & ELF_PF_W) vm_flags |= VM_WRITE;
+        if (ph->p_flags & ELF_PF_R) vm_flags |= VM_READ;
+        // modify the perm bits here for RISC-V把 vm_flags 映射为 RISC-V 的 PTE 权限位：
+        if (vm_flags & VM_READ) perm |= PTE_R;
+        if (vm_flags & VM_WRITE) perm |= (PTE_W | PTE_R);
+        if (vm_flags & VM_EXEC) perm |= PTE_X;
+        
+        if ((ret = mm_map(mm, ph->p_va, ph->p_memsz, vm_flags, NULL)) != 0) {
+            goto bad_cleanup_mmap;//在 mm 的 VMA 列表中登记这段虚拟地址区间，长度 p_memsz，权限 vm_flags。
+        }
+        
+        off_t offset = ph->p_offset;//文件中段内容的起始偏移。
+        size_t off, size;
+        uintptr_t start = ph->p_va, end, la = ROUNDDOWN(start, PGSIZE);
+        //start：当前要处理的“虚拟地址游标”，初始为段起始虚拟地址 p_va。la：页对齐后的虚拟页起始地址（把 start 向下取整到页边界），用于按页分配。end：后面会用来表示拷贝/清零的结束地址。
+        ret = -E_NO_MEM;//进入“分配页”的阶段后，默认错误码再设回内存不足。
+        //把段内容装入内存：先拷贝 filesz，再补零到 memsz
+        //(3.6) alloc memory, and  copy the contents of every program section (from, from+end) to process's memory (la, la+end)
+        end = ph->p_va + ph->p_filesz;//文件实际有内容的部分结束地址（半开区间的“尾”）。
+        
+        //(3.6.1) copy TEXT/DATA section of bianry program
+        while (start < end) {
+            if ((page = pgdir_alloc_page(mm->pgdir, la, perm)) == NULL) {//为虚拟地址 la 分配一个物理页并建立映射，PTE 权限为 perm。失败则回滚（跳 bad_cleanup_mmap）。
+                goto bad_cleanup_mmap;
+            }
+            off = start - la;//当前页内偏移：因为段可能不是页对齐开始。
+            size = PGSIZE - off;//本次最多能写满当前页剩余空间的字节数。
+            la += PGSIZE;//下一次循环要处理的下一页起始虚拟地址。
+            if (end < la) {
+                size -= la - end;
+            }//如果这一页只需要写到 end 就够了（最后一页），则把 size 裁剪成“剩余需要写的字节数”。
+            if ((ret = load_icode_read(fd, page2kva(page) + off, size, offset)) != 0) {
+                //把文件 offset 开始的 size 字节读到内核映射的该页地址（page2kva(page)）加上页内偏移 off。
+                //注意：这里写的是“内核虚拟地址”，但它背后对应的物理页同时也映射到了用户 la-PGSIZE 那个虚拟页。
+                goto bad_cleanup_mmap;
+            }
+            start += size;
+            offset += size;//推进“虚拟地址游标”和“文件偏移游标”。
+        }
+
+        //(3.6.2) build BSS section of binary program) 补零 BSS：把 memsz 比 filesz 多出来的部分清零
+        end = ph->p_va + ph->p_memsz;//段在内存中应该占用的总范围结束地址。
+        if (start < la) {
+            /* ph->p_memsz == ph->p_filesz */
+            if (start == end) {//这个判断处理一种“特殊但常见”的情况：filesz 结束位置还在“最后一个已分配页”的内部（即 start 还没追上 la，因为 la 已经加到下一页了）。
+            //      此时 page 指向的就是刚刚拷贝 filesz 时最后一次分配/使用的页；BSS 的前一段补零需要在这同一页继续清零。
+                continue;
+            }
+            off = start + PGSIZE - la;
+            size = PGSIZE - off;
+            if (end < la) {
+                size -= la - end;
+            }
+            /*
+            计算要在“当前页剩余部分”清零多少：
+            off = start + PGSIZE - la; 等价于 off = start - (la - PGSIZE)，即当前页内偏移。
+            size = PGSIZE - off; 当前页剩余空间
+            如果 end < la（BSS 结束也在这页），同样裁剪 size。
+            */
+            memset(page2kva(page) + off, 0, size);
+            start += size;
+            assert((end < la && start == end) || (end >= la && start == la));
+        }
+        while (start < end) {
+            if ((page = pgdir_alloc_page(mm->pgdir, la, perm)) == NULL) {
+                goto bad_cleanup_mmap;
+            }
+            off = start - la;
+            size = PGSIZE - off;
+            la += PGSIZE;
+            if (end < la) {
+                size -= la - end;
+            }
+            memset(page2kva(page) + off, 0, size);
+            start += size;
+        }
+    }
+    
+    //(4) build user stack memory
+    vm_flags = VM_READ | VM_WRITE | VM_STACK;
+    if ((ret = mm_map(mm, USTACKTOP - USTACKSIZE, USTACKSIZE, vm_flags, NULL)) != 0) {
+        goto bad_cleanup_mmap;
+    }
+    assert(pgdir_alloc_page(mm->pgdir, USTACKTOP - PGSIZE, PTE_USER) != NULL);
+    assert(pgdir_alloc_page(mm->pgdir, USTACKTOP - 2 * PGSIZE, PTE_USER) != NULL);
+    assert(pgdir_alloc_page(mm->pgdir, USTACKTOP - 3 * PGSIZE, PTE_USER) != NULL);
+    assert(pgdir_alloc_page(mm->pgdir, USTACKTOP - 4 * PGSIZE, PTE_USER) != NULL);
+
+    //(5) set current process's mm, sr3, and set CR3 reg = physical addr of Page Directory
+    mm_count_inc(mm);
+    current->mm = mm;
+    current->pgdir = PADDR(mm->pgdir);
+    lsatp(PADDR(mm->pgdir));
+
+    //(6) setup uargc and uargv in user stacks
+    uint64_t stacktop = USTACKTOP - (argc + 1) * sizeof(uintptr_t);
+    char **uargv = (char **)(stacktop);
+    stacktop = (uintptr_t)uargv - argc * EXEC_MAX_ARG_LEN;
+    char *kargv_addr = (char *)stacktop;
+    
+    for (i = 0; i < argc; i++) {
+        uargv[i] = strcpy(kargv_addr, kargv[i]);
+        kargv_addr += EXEC_MAX_ARG_LEN;
+    }
+    uargv[argc] = NULL;
+    
+    //(7) setup trapframe for user environment
+    struct trapframe *tf = current->tf;
+    // Keep sstatus
+    uintptr_t sstatus = tf->status;
+    memset(tf, 0, sizeof(struct trapframe));
+    tf->gpr.sp = stacktop;
+    tf->epc = elf->e_entry;
+    tf->status = (sstatus & ~SSTATUS_SPP) | SSTATUS_SPIE;
+    
+    // setup argc and argv in x10 (a0) and x11 (a1)
+    tf->gpr.a0 = argc;
+    tf->gpr.a1 = (uintptr_t)uargv;
+
+    ret = 0;
+out:
+    return ret;
+    
+bad_cleanup_mmap:
+    exit_mmap(mm);
+bad_elf_cleanup_pgdir:
+    put_pgdir(mm);
+bad_pgdir_cleanup_mm:
+    mm_destroy(mm);
+bad_mm:
+    return ret;
 }
 
 // this function isn't very correct in LAB8
@@ -748,74 +877,76 @@ failed_cleanup:
 //           - call load_icode to setup new memory space accroding binary prog.
 int do_execve(const char *name, int argc, const char **argv)
 {
-    static_assert(EXEC_MAX_ARG_LEN >= FS_MAX_FPATH_LEN);
-    struct mm_struct *mm = current->mm;
-    if (!(argc >= 1 && argc <= EXEC_MAX_ARG_NUM))
+    static_assert(EXEC_MAX_ARG_LEN >= FS_MAX_FPATH_LEN); // 约束：单个参数字符串的最大长度必须能容纳最大路径长度
+    struct mm_struct *mm = current->mm;                  // 旧地址空间（用于校验/拷贝用户指针参数，稍后会被释放并替换）
+    if (!(argc >= 1 && argc <= EXEC_MAX_ARG_NUM))        // 参数个数必须在允许范围内
     {
-        return -E_INVAL;
+        return -E_INVAL;                                 // 非法参数
     }
 
-    char local_name[PROC_NAME_LEN + 1];
-    memset(local_name, 0, sizeof(local_name));
+    char local_name[PROC_NAME_LEN + 1];                  // 进程名缓冲区（内核态）
+    memset(local_name, 0, sizeof(local_name));           // 清零，保证字符串结尾 '\0'
 
-    char *kargv[EXEC_MAX_ARG_NUM];
-    const char *path;
+    char *kargv[EXEC_MAX_ARG_NUM];                        // 把用户态 argv 拷贝到内核后的参数数组（每个元素单独 kmalloc）
+    const char *path;                                     // 最终用于打开可执行文件的路径指针（来自 argv[0]）
 
-    int ret = -E_INVAL;
+    int ret = -E_INVAL;                                   // 默认错误码：参数无效
 
-    lock_mm(mm);
-    if (name == NULL)
+    lock_mm(mm);                                          // 保护当前地址空间（user_mem_check/copy_string 需要一致视图）
+    if (name == NULL)                                     // name 为 NULL：用默认名字（主要用于调试输出）
     {
-        snprintf(local_name, sizeof(local_name), "<null> %d", current->pid);
+        snprintf(local_name, sizeof(local_name), "<null> %d", current->pid); // 例如："<null> 3"
     }
     else
     {
+        // 从用户地址空间把 name 拷贝到内核缓冲区 local_name
         if (!copy_string(mm, local_name, name, sizeof(local_name)))
         {
-            unlock_mm(mm);
-            return ret;
+            unlock_mm(mm);                                // 拷贝失败：先解锁再返回
+            return ret;                                   // ret 仍为 -E_INVAL
         }
     }
+    // 把用户态 argv 指向的每个参数字符串拷贝到内核，并放入 kargv
     if ((ret = copy_kargv(mm, argc, kargv, argv)) != 0)
     {
-        unlock_mm(mm);
-        return ret;
+        unlock_mm(mm);                                    // 拷贝 argv 失败：解锁
+        return ret;                                       // 返回 copy_kargv 的错误码（-E_INVAL 或 -E_NO_MEM 等）
     }
-    path = argv[0];
-    unlock_mm(mm);
-    files_closeall(current->filesp);
+    path = argv[0];                                       // 约定 argv[0] 为程序路径（用户指针）
+    unlock_mm(mm);                                        // 结束对旧 mm 的访问
+    files_closeall(current->filesp);                      // exec 语义：关闭当前进程已打开的文件（本实验策略）
 
     /* sysfile_open will check the first argument path, thus we have to use a user-space pointer, and argv[0] may be incorrect */
-    int fd;
-    if ((ret = fd = sysfile_open(path, O_RDONLY)) < 0)
+    int fd;                                               // 新程序文件描述符
+    if ((ret = fd = sysfile_open(path, O_RDONLY)) < 0)     // 打开可执行文件（只读）
     {
-        goto execve_exit;
+        goto execve_exit;                                 // 打开失败：统一走失败清理/退出
     }
-    if (mm != NULL)
+    if (mm != NULL)                                       // 如果旧地址空间存在，释放它（exec 用新地址空间替换）
     {
-        lsatp(boot_pgdir_pa);
-        if (mm_count_dec(mm) == 0)
+        lsatp(boot_pgdir_pa);                              // 先切回内核页表，避免在释放用户页表时还在使用它
+        if (mm_count_dec(mm) == 0)                         // mm 引用计数减一；为 0 时表示无人共享，可真正销毁
         {
-            exit_mmap(mm);
-            put_pgdir(mm);
-            mm_destroy(mm);
+            exit_mmap(mm);                                 // 释放该 mm 下所有 VMA 及其映射的物理页
+            put_pgdir(mm);                                 // 释放页目录/根页表
+            mm_destroy(mm);                                // 释放 mm_struct 本身
         }
-        current->mm = NULL;
+        current->mm = NULL;                                // 当前进程不再指向旧 mm（后面 load_icode 会安装新 mm）
     }
-    ret = -E_NO_MEM;
-    ;
-    if ((ret = load_icode(fd, argc, kargv)) != 0)
+    ret = -E_NO_MEM;                                      // 后续阶段（建新地址空间）常见失败原因是内存不足
+    ;                                                    // 空语句：对逻辑无影响
+    if ((ret = load_icode(fd, argc, kargv)) != 0)         // 把 ELF 装载到“当前进程”的新 mm，并初始化用户栈/入口
     {
-        goto execve_exit;
+        goto execve_exit;                                 // 加载失败：统一走失败清理/退出
     }
-    put_kargv(argc, kargv);
-    set_proc_name(current, local_name);
-    return 0;
+    put_kargv(argc, kargv);                               // 加载成功：释放内核态参数拷贝（用户栈中已有 argv/字符串）
+    set_proc_name(current, local_name);                   // 更新进程名（用于 ps/debug）
+    return 0;                                             // exec 成功：理论上随后会通过 trapret 返回用户态运行新程序
 
 execve_exit:
-    put_kargv(argc, kargv);
-    do_exit(ret);
-    panic("already exit: %e.\n", ret);
+    put_kargv(argc, kargv);                               // 失败路径：释放已分配的 kargv[i]
+    do_exit(ret);                                         // 失败直接终止当前进程（该实现策略：exec 失败即退出）
+    panic("already exit: %e.\n", ret);                 // 按语义 do_exit 不返回；这句用于防御/调试
 }
 
 // do_yield - ask the scheduler to reschedule
